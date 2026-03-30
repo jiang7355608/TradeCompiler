@@ -1,0 +1,197 @@
+package com.trading.signal.config;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+/**
+ * 交易引擎全局配置
+ * 绑定 application.yml 中 trading.* 下的所有配置项
+ */
+@Component
+@ConfigurationProperties(prefix = "trading")
+public class TradingProperties {
+
+    private String strategy = "aggressive";
+    private Okx okx = new Okx();
+    private Scheduler scheduler = new Scheduler();
+    private Signal signal = new Signal();
+    private Email email = new Email();
+    private Proxy proxy = new Proxy();
+    private StrategyParams params = new StrategyParams();
+    private Backtest backtest = new Backtest();
+
+    public String getStrategy()              { return strategy; }
+    public void setStrategy(String s)        { this.strategy = s; }
+    public Okx getOkx()                      { return okx; }
+    public void setOkx(Okx v)               { this.okx = v; }
+    public Scheduler getScheduler()          { return scheduler; }
+    public void setScheduler(Scheduler v)    { this.scheduler = v; }
+    public Signal getSignal()                { return signal; }
+    public void setSignal(Signal v)          { this.signal = v; }
+    public Email getEmail()                  { return email; }
+    public void setEmail(Email v)            { this.email = v; }
+    public StrategyParams getParams()        { return params; }
+    public void setParams(StrategyParams v)  { this.params = v; }
+    public Backtest getBacktest()            { return backtest; }
+    public void setBacktest(Backtest v)      { this.backtest = v; }
+    public Proxy getProxy()                  { return proxy; }
+    public void setProxy(Proxy v)            { this.proxy = v; }
+
+    // ── OKX 连接配置 ──────────────────────────────────────────────────────
+    public static class Okx {
+        private String instId    = "BTC-USDT";
+        private String timeframe = "1m";
+        private int    limit     = 50;
+
+        public String getInstId()         { return instId; }
+        public void setInstId(String v)   { this.instId = v; }
+        public String getTimeframe()      { return timeframe; }
+        public void setTimeframe(String v){ this.timeframe = v; }
+        public int getLimit()             { return limit; }
+        public void setLimit(int v)       { this.limit = v; }
+    }
+
+    // ── 定时任务配置 ──────────────────────────────────────────────────────
+    public static class Scheduler {
+        private long intervalMs = 60000;
+
+        public long getIntervalMs()       { return intervalMs; }
+        public void setIntervalMs(long v) { this.intervalMs = v; }
+    }
+
+    // ── 信号输出配置 ──────────────────────────────────────────────────────
+    public static class Signal {
+        private String outputFile = "signal.json";
+
+        public String getOutputFile()       { return outputFile; }
+        public void setOutputFile(String v) { this.outputFile = v; }
+    }
+
+    // ── 邮件配置 ──────────────────────────────────────────────────────────
+    public static class Email {
+        private String  senderEmail   = "";
+        private String  appPassword   = "";
+        private String  receiverEmail = "";
+        private boolean enabled       = false;
+        private double  minConfidence = 0.6;
+        private long    cooldownMs    = 300000;
+
+        public String  getSenderEmail()          { return senderEmail; }
+        public void    setSenderEmail(String v)  { this.senderEmail = v; }
+        public String  getAppPassword()          { return appPassword; }
+        public void    setAppPassword(String v)  { this.appPassword = v; }
+        public String  getReceiverEmail()        { return receiverEmail; }
+        public void    setReceiverEmail(String v){ this.receiverEmail = v; }
+        public boolean isEnabled()               { return enabled; }
+        public void    setEnabled(boolean v)     { this.enabled = v; }
+        public double  getMinConfidence()        { return minConfidence; }
+        public void    setMinConfidence(double v){ this.minConfidence = v; }
+        public long    getCooldownMs()           { return cooldownMs; }
+        public void    setCooldownMs(long v)     { this.cooldownMs = v; }
+    }
+
+    // ── 策略参数（所有可调参数集中在此）──────────────────────────────────
+    public static class StrategyParams {
+        // MarketAnalyzer
+        private int    rangeWindow           = 6;
+        private double rangeThreshold        = 0.006;
+        private int    breakoutWindowLong    = 14;
+        private int    volWindow             = 20;
+        private double volumeSpikeMultiplier = 1.5;
+        private int    emaShort              = 5;
+        private int    emaLong               = 20;
+        private double trendThreshold        = 0.0002;
+        // AggressiveStrategy
+        private double aggRiskRewardRatio   = 2.0;
+        private double aggMinSlPct          = 0.002;
+        private double aggMidRangeLower     = 0.30;
+        private double aggMidRangeUpper     = 0.70;
+        private double aggSweepAmplitude    = 0.01;
+        private double aggSweepBodyRatio    = 0.50;
+        private double aggPositionStrong    = 0.30;
+        private double aggPositionWeak      = 0.15;
+        private long   aggCooldownMs        = 300000;
+        // ConservativeStrategy
+        private double conRiskRewardRatio   = 2.5;
+        private double conMinSlPct          = 0.002;
+        private double conPositionBase      = 0.20;
+        private double conPositionBonus     = 0.25;
+        private long   conCooldownMs        = 600000;
+
+        public int    getRangeWindow()              { return rangeWindow; }
+        public void   setRangeWindow(int v)         { this.rangeWindow = v; }
+        public double getRangeThreshold()           { return rangeThreshold; }
+        public void   setRangeThreshold(double v)   { this.rangeThreshold = v; }
+        public int    getBreakoutWindowLong()       { return breakoutWindowLong; }
+        public void   setBreakoutWindowLong(int v)  { this.breakoutWindowLong = v; }
+        public int    getVolWindow()                { return volWindow; }
+        public void   setVolWindow(int v)           { this.volWindow = v; }
+        public double getVolumeSpikeMultiplier()    { return volumeSpikeMultiplier; }
+        public void   setVolumeSpikeMultiplier(double v){ this.volumeSpikeMultiplier = v; }
+        public int    getEmaShort()                 { return emaShort; }
+        public void   setEmaShort(int v)            { this.emaShort = v; }
+        public int    getEmaLong()                  { return emaLong; }
+        public void   setEmaLong(int v)             { this.emaLong = v; }
+        public double getTrendThreshold()           { return trendThreshold; }
+        public void   setTrendThreshold(double v)   { this.trendThreshold = v; }
+        public double getAggRiskRewardRatio()       { return aggRiskRewardRatio; }
+        public void   setAggRiskRewardRatio(double v){ this.aggRiskRewardRatio = v; }
+        public double getAggMinSlPct()              { return aggMinSlPct; }
+        public void   setAggMinSlPct(double v)      { this.aggMinSlPct = v; }
+        public double getAggMidRangeLower()         { return aggMidRangeLower; }
+        public void   setAggMidRangeLower(double v) { this.aggMidRangeLower = v; }
+        public double getAggMidRangeUpper()         { return aggMidRangeUpper; }
+        public void   setAggMidRangeUpper(double v) { this.aggMidRangeUpper = v; }
+        public double getAggSweepAmplitude()        { return aggSweepAmplitude; }
+        public void   setAggSweepAmplitude(double v){ this.aggSweepAmplitude = v; }
+        public double getAggSweepBodyRatio()        { return aggSweepBodyRatio; }
+        public void   setAggSweepBodyRatio(double v){ this.aggSweepBodyRatio = v; }
+        public double getAggPositionStrong()        { return aggPositionStrong; }
+        public void   setAggPositionStrong(double v){ this.aggPositionStrong = v; }
+        public double getAggPositionWeak()          { return aggPositionWeak; }
+        public void   setAggPositionWeak(double v)  { this.aggPositionWeak = v; }
+        public long   getAggCooldownMs()            { return aggCooldownMs; }
+        public void   setAggCooldownMs(long v)      { this.aggCooldownMs = v; }
+        public double getConRiskRewardRatio()       { return conRiskRewardRatio; }
+        public void   setConRiskRewardRatio(double v){ this.conRiskRewardRatio = v; }
+        public double getConMinSlPct()              { return conMinSlPct; }
+        public void   setConMinSlPct(double v)      { this.conMinSlPct = v; }
+        public double getConPositionBase()          { return conPositionBase; }
+        public void   setConPositionBase(double v)  { this.conPositionBase = v; }
+        public double getConPositionBonus()         { return conPositionBonus; }
+        public void   setConPositionBonus(double v) { this.conPositionBonus = v; }
+        public long   getConCooldownMs()            { return conCooldownMs; }
+        public void   setConCooldownMs(long v)      { this.conCooldownMs = v; }
+    }
+
+    // ── 回测配置 ──────────────────────────────────────────────────────────
+    public static class Backtest {
+        private double initialCapital = 200.0;
+        private int    leverage       = 20;
+        private String dataDir        = "backtest-data";
+        private String reportSubject  = "[月度回测报告] BTC交易策略";
+
+        public double getInitialCapital()        { return initialCapital; }
+        public void   setInitialCapital(double v){ this.initialCapital = v; }
+        public int    getLeverage()              { return leverage; }
+        public void   setLeverage(int v)         { this.leverage = v; }
+        public String getDataDir()               { return dataDir; }
+        public void   setDataDir(String v)       { this.dataDir = v; }
+        public String getReportSubject()         { return reportSubject; }
+        public void   setReportSubject(String v) { this.reportSubject = v; }
+    }
+
+    // ── 代理配置 ──────────────────────────────────────────────────────────
+    public static class Proxy {
+        private boolean enabled = false;
+        private String  host    = "127.0.0.1";
+        private int     port    = 7890;
+
+        public boolean isEnabled()          { return enabled; }
+        public void    setEnabled(boolean v){ this.enabled = v; }
+        public String  getHost()            { return host; }
+        public void    setHost(String v)    { this.host = v; }
+        public int     getPort()            { return port; }
+        public void    setPort(int v)       { this.port = v; }
+    }
+}
