@@ -4,6 +4,7 @@ import com.trading.signal.config.TradingProperties;
 import com.trading.signal.service.EmailService;
 import com.trading.signal.strategy.AggressiveStrategy;
 import com.trading.signal.strategy.ConservativeStrategy;
+import com.trading.signal.strategy.MeanReversionStrategy;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
@@ -111,7 +112,7 @@ public class BacktestScheduler {
 
         try {
             BacktestResult aggResult = engine.run(csvFile, new AggressiveStrategy(params));
-            report.append(aggResult.buildEmailReport("激进策略 (Aggressive)", params, true));
+            report.append(aggResult.buildEmailReport("激进策略 (Aggressive)", params, "aggressive"));
         } catch (Exception e) {
             log.error("激进策略回测失败: {}", e.getMessage(), e);
             report.append("⚠ 激进策略回测失败: ").append(e.getMessage()).append("\n\n");
@@ -119,10 +120,18 @@ public class BacktestScheduler {
 
         try {
             BacktestResult conResult = engine.run(csvFile, new ConservativeStrategy(params));
-            report.append(conResult.buildEmailReport("保守策略 (Conservative)", params, false));
+            report.append(conResult.buildEmailReport("保守策略 (Conservative)", params, "conservative"));
         } catch (Exception e) {
             log.error("保守策略回测失败: {}", e.getMessage(), e);
             report.append("⚠ 保守策略回测失败: ").append(e.getMessage()).append("\n\n");
+        }
+
+        try {
+            BacktestResult mrResult = engine.run(csvFile, new MeanReversionStrategy(params));
+            report.append(mrResult.buildEmailReport("均值回归策略 (Mean Reversion)", params, "mean-reversion"));
+        } catch (Exception e) {
+            log.error("均值回归策略回测失败: {}", e.getMessage(), e);
+            report.append("⚠ 均值回归策略回测失败: ").append(e.getMessage()).append("\n\n");
         }
 
         // Step 3: 附上当前参数供参考

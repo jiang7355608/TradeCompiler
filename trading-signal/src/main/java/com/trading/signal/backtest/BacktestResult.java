@@ -4,6 +4,7 @@ import com.trading.signal.config.TradingProperties;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 回测结果统计
@@ -43,6 +44,7 @@ public class BacktestResult {
     private final double   initialCapital;
     private final int      leverage;
     private final List<Trade> trades = new ArrayList<>();
+    private final Map<String, Integer> rejectReasons = new java.util.LinkedHashMap<>();
 
     // 实时跟踪
     private double currentCapital;
@@ -145,17 +147,29 @@ public class BacktestResult {
     public int    getWins()              { return wins; }
     public int    getLosses()            { return losses; }
     public double getInitialCapital()    { return initialCapital; }
+    public Map<String, Integer> getRejectReasons() { return rejectReasons; }
+
+    public void recordReject(String reason) {
+        // 取reason的前缀作为分类key（截取到第一个空格或括号）
+        String key = reason;
+        int idx = reason.indexOf('(');
+        if (idx > 0) key = reason.substring(0, idx).trim();
+        idx = key.indexOf(':');
+        if (idx > 0) key = key.substring(0, idx).trim();
+        if (key.length() > 60) key = key.substring(0, 60);
+        rejectReasons.merge(key, 1, Integer::sum);
+    }
 
     /**
      * 生成邮件报告文本（含参数调整建议）
      *
      * @param strategyName 策略名称
      * @param params       当前参数配置（用于生成调整建议）
-     * @param isAggressive true=激进策略，false=保守策略
+     * @param strategyType "aggressive" / "conservative" / "mean-reversion"
      */
     public String buildEmailReport(String strategyName,
                                    TradingProperties.StrategyParams params,
-                                   boolean isAggressive) {
+                                   String strategyType) {
         int total = wins + losses;
         if (total == 0) return "【" + strategyName + "】\n  本期无交易信号产生\n\n";
 
@@ -173,10 +187,23 @@ public class BacktestResult {
         // ── 基础统计 ──────────────────────────────────────────────────────
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("【%s】\n", strategyName));
-        sb.append(String.format("  止损方式    : 动态（前一根K线中点，兜底%.2f%%）\n",
-            isAggressive ? params.getAggMinSlPct() * 100 : params.getConMinSlPct() * 100));
-        sb.append(String.format("  止盈方式    : 动态（止损距离 × %.1f倍风险回报比）\n",
-            isAggressive ? params.getAggRiskRewardRatio() : params.getConRiskRewardRatio()));
+
+        // 止损止盈描述按策略类型区分
+        switch (strategyType) {
+            case "aggressive" -> {
+                sb.append(String.format("  止损方式    : 动态（前一根K线中点，兜底%.2f%%）\n", params.getAggMinSlPct() * 100));
+                sb.append(String.format("  止盈方式    : 动态（止损距离 × %.1f倍风险回报比）\n", params.getAggRiskRewardRatio()));
+            }
+            case "conservative" -> {
+                sb.append(String.format("  止损方式    : 动态（前一根K线中点，兜底%.2f%%）\n", params.getConMinSlPct() * 100));
+                sb.append(String.format("  止盈方式    : 动态（止损距离 × %.1f倍风险回报比）\n", params.getConRiskRewardRatio()));
+            }
+            case "mean-reversion" -> {
+                sb.append(String.format("  止损方式    : 区间边沿外 %.0f%%区间宽度\n", params.getMrSlBuffer() * 100));
+                sb.append(String.format("  止盈方式    : 止损距离 × %.1f倍风险回报比\n", params.getMrRiskRewardRatio()));
+            }
+        }
+
         sb.append(String.format("  总盈亏      : %+.2fU (%+.2f%%)\n", totalPnl, totalPnlPct));
         sb.append(String.format("  交易次数    : %d次（盈%d / 亏%d）\n", total, wins, losses));
         sb.append(String.format("  胜率        : %.1f%%\n", winRate));
@@ -198,7 +225,7 @@ public class BacktestResult {
 
         // ── 参数调整建议 ──────────────────────────────────────────────────
         sb.append("  ─── 参数调整建议 ───────────────────────────\n");
-        List<ParameterAdvisor.Advice> advices = isAggressive
+        List<ParameterAdvisor.Advice> advices = "aggressive".equals(strategyType)
             ? ParameterAdvisor.adviseAggressive(this, params)
             : ParameterAdvisor.adviseConservative(this, params);
         sb.append(ParameterAdvisor.formatAdvices(advices, strategyName));

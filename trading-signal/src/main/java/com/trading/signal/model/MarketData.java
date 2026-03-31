@@ -37,6 +37,9 @@ public class MarketData {
     private final double  rangeHigh14;          // 14根窗口最高价
     private final double  rangeLow14;           // 14根窗口最低价
     private final KLine   prevKline;            // 前一根K线（用于动态止损）
+    private final KLine   prev2Kline;           // 前两根K线（用于均值回归策略反转确认）
+    private final double  ema5;                 // EMA短期值（用于趋势强度计算）
+    private final double  ema20;                // EMA长期值
 
     public MarketData(boolean isRange, boolean volumeSpike, String breakout,
                       boolean continuation, double currentPrice,
@@ -44,7 +47,8 @@ public class MarketData {
                       KLine lastKline, double avgVolume20,
                       String trendBias, boolean strongContinuation,
                       String breakout14, double rangeHigh14, double rangeLow14,
-                      KLine prevKline) {
+                      KLine prevKline, KLine prev2Kline,
+                      double ema5, double ema20) {
         this.isRange             = isRange;
         this.volumeSpike         = volumeSpike;
         this.breakout            = breakout;
@@ -61,6 +65,9 @@ public class MarketData {
         this.rangeHigh14         = rangeHigh14;
         this.rangeLow14          = rangeLow14;
         this.prevKline           = prevKline;
+        this.prev2Kline          = prev2Kline;
+        this.ema5                = ema5;
+        this.ema20               = ema20;
     }
 
     public boolean isRange()                { return isRange; }
@@ -79,6 +86,9 @@ public class MarketData {
     public double  getRangeHigh14()         { return rangeHigh14; }
     public double  getRangeLow14()          { return rangeLow14; }
     public KLine   getPrevKline()           { return prevKline; }
+    public KLine   getPrev2Kline()          { return prev2Kline; }
+    public double  getEma5()                { return ema5; }
+    public double  getEma20()               { return ema20; }
 
     @Override
     public String toString() {

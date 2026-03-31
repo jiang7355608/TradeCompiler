@@ -1,6 +1,7 @@
 package com.trading.signal.analyzer;
 
 import com.trading.signal.config.TradingProperties;
+import com.trading.signal.model.HtfRange;
 import com.trading.signal.model.KLine;
 import com.trading.signal.model.MarketData;
 import org.slf4j.Logger;
@@ -95,7 +96,8 @@ public class MarketAnalyzer {
         return new MarketData(
             isRange, volumeSpike, breakout6, continuation,
             last.getClose(), maxHigh6, minLow6, amplitude, last, avgVolume20,
-            trendBias, strongCont, breakout14, maxHigh14, minLow14, prev
+            trendBias, strongCont, breakout14, maxHigh14, minLow14, prev, prev2,
+            ema5, ema20
         );
     }
 
@@ -107,5 +109,42 @@ public class MarketAnalyzer {
             ema = klines.get(i).getClose() * k + ema * (1 - k);
         }
         return ema;
+    }
+
+    /**
+     * 分析高时间框架（4小时）箱体
+     * 用于均值回归策略的大箱体判断
+     *
+     * @param klines4h 4小时K线列表（至少需要 rangeWindow+emaLong 根）
+     */
+    public HtfRange analyzeHtf(List<KLine> klines4h) {
+        int minRequired = Math.max(p.getRangeWindow(), p.getEmaLong()) + 1;
+        if (klines4h == null || klines4h.size() < minRequired) {
+            // 数据不足，返回非区间
+            return new HtfRange(false, 0, 0, "neutral");
+        }
+
+        int size = klines4h.size();
+
+        // 箱体：用 rangeWindow 根4h K线的高低点
+        List<KLine> win = klines4h.subList(size - p.getRangeWindow() - 1, size - 1);
+        double maxHigh = win.stream().mapToDouble(KLine::getHigh).max().orElse(0);
+        double minLow  = win.stream().mapToDouble(KLine::getLow).min().orElse(0);
+
+        // 4h级别用更宽松的横盘阈值（4h波动天然更大，6根=24小时）
+        // BTC日内波动2-3%是常态，需要放宽到8%左右
+        boolean isRange = minLow > 0 && (maxHigh - minLow) / minLow < p.getRangeThreshold() * 12;
+
+        // EMA趋势
+        List<KLine> emaWin = klines4h.subList(size - p.getEmaLong() - 1, size - 1);
+        double ema20 = calcEma(emaWin, p.getEmaLong());
+        double ema5  = calcEma(emaWin.subList(emaWin.size() - p.getEmaShort(), emaWin.size()), p.getEmaShort());
+
+        String trendBias;
+        if      (ema5 > ema20 * (1 + p.getTrendThreshold())) trendBias = "up";
+        else if (ema5 < ema20 * (1 - p.getTrendThreshold())) trendBias = "down";
+        else                                                  trendBias = "neutral";
+
+        return new HtfRange(isRange, maxHigh, minLow, trendBias);
     }
 }

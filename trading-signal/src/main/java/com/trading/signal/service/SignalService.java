@@ -65,7 +65,22 @@ public class SignalService {
 
             // Step 3: 策略决策
             Strategy    strategy    = strategyRouter.current();
-            TradeSignal tradeSignal = strategy.generateSignal(marketData);
+            TradeSignal tradeSignal;
+
+            // 均值回归策略：额外拉4小时K线做大箱体分析
+            if ("mean-reversion".equals(strategy.getName())) {
+                List<KLine> klines4h = okxClient.fetchCandles(
+                    okxCfg.getInstId(), "4H", okxCfg.getLimit());
+                com.trading.signal.model.HtfRange htfRange = analyzer.analyzeHtf(klines4h);
+                log.info("HTF分析: isRange={} high={} low={} trend={}",
+                    htfRange.isRange(),
+                    String.format("%.2f", htfRange.getRangeHigh()),
+                    String.format("%.2f", htfRange.getRangeLow()),
+                    htfRange.getTrendBias());
+                tradeSignal = strategy.generateSignal(marketData, htfRange);
+            } else {
+                tradeSignal = strategy.generateSignal(marketData);
+            }
 
             log.info("策略={} 决策={} 置信度={} 原因={}",
                 strategy.getName(),
@@ -76,8 +91,16 @@ public class SignalService {
             // Step 4: 写入 signal.json
             signalWriter.write(marketData, tradeSignal, strategy.getName());
 
-            // Step 5: 邮件通知（内部已处理冷却、置信度过滤、错误捕获）
+            // Step 5: 邮件通知
             emailService.sendSignalEmail(tradeSignal, marketData.getCurrentPrice());
+
+            // 试探仓作废通知（NO_TRADE 但需要通知人平仓）
+            if (tradeSignal.getAction() == TradeSignal.Action.NO_TRADE) {
+                String reason = tradeSignal.getReason();
+                if (reason.startsWith("PROBE timeout") || reason.startsWith("PROBE hit")) {
+                    emailService.sendCancelEmail(reason, marketData.getCurrentPrice());
+                }
+            }
 
         } catch (Exception e) {
             log.error("本轮执行出错: {}", e.getMessage(), e);
@@ -93,7 +116,13 @@ public class SignalService {
             okxCfg.getInstId(), okxCfg.getTimeframe(), okxCfg.getLimit());
         MarketData  marketData = analyzer.analyze(klines);
         Strategy    strategy   = strategyRouter.current();
-        TradeSignal signal     = strategy.generateSignal(marketData);
+        TradeSignal signal;
+        if ("mean-reversion".equals(strategy.getName())) {
+            List<KLine> klines4h = okxClient.fetchCandles(okxCfg.getInstId(), "4H", okxCfg.getLimit());
+            signal = strategy.generateSignal(marketData, analyzer.analyzeHtf(klines4h));
+        } else {
+            signal = strategy.generateSignal(marketData);
+        }
         signalWriter.write(marketData, signal, strategy.getName());
         emailService.sendSignalEmail(signal, marketData.getCurrentPrice());
         return signal;

@@ -220,6 +220,46 @@
       "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
     },
     {
+      "name": "trading.params.mr-buffer",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-cooldown-ms",
+      "type": "java.lang.Long",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-max-amplitude",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-max-sl-pct",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-position",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-risk-reward-ratio",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-sl-buffer",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
+      "name": "trading.params.mr-trend-strength-limit",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"
+    },
+    {
       "name": "trading.params.range-threshold",
       "type": "java.lang.Double",
       "sourceType": "com.trading.signal.config.TradingProperties$StrategyParams"

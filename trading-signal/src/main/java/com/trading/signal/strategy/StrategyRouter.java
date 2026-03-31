@@ -65,4 +65,14 @@ public class StrategyRouter {
     public java.util.Set<String> availableStrategies() {
         return java.util.Collections.unmodifiableSet(strategyMap.keySet());
     }
+
+    /** 按名称获取策略实例 */
+    public Strategy getStrategy(String name) {
+        Strategy strategy = strategyMap.get(name.toLowerCase());
+        if (strategy == null) {
+            throw new IllegalArgumentException(
+                String.format("未知策略: '%s'，可用策略: %s", name, strategyMap.keySet()));
+        }
+        return strategy;
+    }
 }

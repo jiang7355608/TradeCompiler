@@ -117,6 +117,15 @@ public class TradingProperties {
         private double conPositionBase      = 0.20;
         private double conPositionBonus     = 0.25;
         private long   conCooldownMs        = 600000;
+        // MeanReversionStrategy
+        private double mrBuffer             = 0.005;  // 接近上下沿的缓冲区（0.5%）
+        private double mrMaxAmplitude       = 0.02;   // 最大振幅过滤（2%），超过不做反转
+        private double mrRiskRewardRatio    = 2.0;    // 风险回报比
+        private double mrSlBuffer           = 0.3;    // 止损=区间边沿外 区间宽度×此值
+        private double mrMaxSlPct           = 0.01;   // 最大止损距离上限（价格的1%）
+        private double mrPosition           = 0.20;   // 仓位比例
+        private long   mrCooldownMs         = 2700000; // 冷却期45分钟
+        private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限（0.2%），超过禁止均值回归
 
         public int    getRangeWindow()              { return rangeWindow; }
         public void   setRangeWindow(int v)         { this.rangeWindow = v; }
@@ -162,6 +171,22 @@ public class TradingProperties {
         public void   setConPositionBonus(double v) { this.conPositionBonus = v; }
         public long   getConCooldownMs()            { return conCooldownMs; }
         public void   setConCooldownMs(long v)      { this.conCooldownMs = v; }
+        public double getMrBuffer()                 { return mrBuffer; }
+        public void   setMrBuffer(double v)         { this.mrBuffer = v; }
+        public double getMrMaxAmplitude()            { return mrMaxAmplitude; }
+        public void   setMrMaxAmplitude(double v)   { this.mrMaxAmplitude = v; }
+        public double getMrRiskRewardRatio()         { return mrRiskRewardRatio; }
+        public void   setMrRiskRewardRatio(double v) { this.mrRiskRewardRatio = v; }
+        public double getMrSlBuffer()               { return mrSlBuffer; }
+        public void   setMrSlBuffer(double v)       { this.mrSlBuffer = v; }
+        public double getMrMaxSlPct()               { return mrMaxSlPct; }
+        public void   setMrMaxSlPct(double v)       { this.mrMaxSlPct = v; }
+        public double getMrPosition()               { return mrPosition; }
+        public void   setMrPosition(double v)       { this.mrPosition = v; }
+        public long   getMrCooldownMs()             { return mrCooldownMs; }
+        public void   setMrCooldownMs(long v)       { this.mrCooldownMs = v; }
+        public double getMrTrendStrengthLimit()      { return mrTrendStrengthLimit; }
+        public void   setMrTrendStrengthLimit(double v) { this.mrTrendStrengthLimit = v; }
     }
 
     // ── 回测配置 ──────────────────────────────────────────────────────────

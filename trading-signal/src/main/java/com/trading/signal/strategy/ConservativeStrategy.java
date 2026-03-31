@@ -128,7 +128,9 @@ public class ConservativeStrategy implements Strategy {
         boolean hasRange  = data.isRange();
         double  price     = data.getCurrentPrice();
         double  confidence = 0.65 + (hasRange ? 0.10 : 0.0);
-        double  position   = hasRange ? p.getConPositionBonus() : p.getConPositionBase();
+        // 动态仓位：基础仓位 × (置信度 / 0.50)，上限40%
+        double  basePosition = hasRange ? p.getConPositionBonus() : p.getConPositionBase();
+        double  position     = Math.min(basePosition * (confidence / 0.50), 0.40);
         String  label      = hasRange ? " + consolidation" : "";
 
         // 动态止损：前一根K线的中点

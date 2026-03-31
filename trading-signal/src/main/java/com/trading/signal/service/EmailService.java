@@ -114,8 +114,19 @@ public class EmailService {
      * 格式：[TRADE SIGNAL] BTC-USDT LONG
      */
     private String buildSubject(TradeSignal signal, String instId) {
-        return String.format("[TRADE SIGNAL] %s %s",
-            instId.toUpperCase(),
+        String reason = signal.getReason();
+        String type;
+        if (reason.startsWith("PROBE timeout") || reason.startsWith("PROBE hit")) {
+            type = "CANCEL";  // 试探仓作废
+        } else if (reason.startsWith("PROBE")) {
+            type = "PROBE";   // 试探仓
+        } else if (reason.startsWith("ADD")) {
+            type = "CONFIRM"; // 确认加仓
+        } else {
+            type = "SIGNAL";  // 其他策略的普通信号
+        }
+        return String.format("[%s] %s %s",
+            type, instId.toUpperCase(),
             signal.getAction().getValue().toUpperCase());
     }
 
@@ -170,5 +181,29 @@ public class EmailService {
         message.setText(body);
 
         Transport.send(message);
+    }
+
+    /**
+     * 发送试探仓作废通知
+     */
+    public void sendCancelEmail(String reason, double currentPrice) {
+        TradingProperties.Email cfg = properties.getEmail();
+        if (!cfg.isEnabled()) return;
+
+        String subject = String.format("[CANCEL] %s 试探仓作废",
+            properties.getOkx().getInstId().toUpperCase());
+        String body = String.format(
+            "===== PROBE CANCELLED =====\n\n" +
+            "Reason : %s\n" +
+            "Price  : %.2f\n\n" +
+            "请手动平掉试探仓位\n" +
+            "===========================",
+            reason, currentPrice);
+
+        try {
+            send(cfg, subject, body);
+        } catch (Exception e) {
+            log.error("作废通知邮件发送失败: {}", e.getMessage());
+        }
     }
 }

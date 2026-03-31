@@ -4,6 +4,7 @@ import com.trading.signal.config.TradingProperties;
 import com.trading.signal.model.KLine;
 import com.trading.signal.strategy.AggressiveStrategy;
 import com.trading.signal.strategy.ConservativeStrategy;
+import com.trading.signal.strategy.MeanReversionStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -42,19 +43,29 @@ public class ParameterOptimizer {
         log.info("参数优化开始: {} 根K线, 本金={}U, 杠杆={}x",
             klines.size(), initialCapital, leverage);
 
-        List<ScoredResult> aggResults = runGrid(klines, initialCapital, leverage, true);
-        List<ScoredResult> conResults = runGrid(klines, initialCapital, leverage, false);
+        List<ScoredResult> aggResults = runGrid(klines, initialCapital, leverage, "aggressive");
+        List<ScoredResult> conResults = runGrid(klines, initialCapital, leverage, "conservative");
+        List<ScoredResult> mrResults  = runGrid(klines, initialCapital, leverage, "mean-reversion");
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("dataFile", csvFile);
         response.put("klineCount", klines.size());
-        response.put("aggressive", formatResults(aggResults, topN, true, initialCapital));
-        response.put("conservative", formatResults(conResults, topN, false, initialCapital));
+        response.put("aggressive", formatResults(aggResults, topN, "aggressive", initialCapital));
+        response.put("conservative", formatResults(conResults, topN, "conservative", initialCapital));
+        response.put("meanReversion", formatResults(mrResults, topN, "mean-reversion", initialCapital));
         return response;
     }
 
     private List<ScoredResult> runGrid(List<KLine> klines, double capital, int leverage,
-                                        boolean isAggressive) {
+                                        String strategyType) {
+        return "mean-reversion".equals(strategyType)
+            ? runMrGrid(klines, capital, leverage)
+            : runBreakoutGrid(klines, capital, leverage, strategyType);
+    }
+
+    /** 突破策略（激进/保守）的搜索空间 */
+    private List<ScoredResult> runBreakoutGrid(List<KLine> klines, double capital, int leverage,
+                                                String strategyType) {
         List<ScoredResult> results = new ArrayList<>();
 
         double[] rangeThresholds   = {0.006, 0.008, 0.010, 0.012, 0.015};
@@ -68,34 +79,61 @@ public class ParameterOptimizer {
                 for (double rr : riskRewardRatios) {
                     for (double minSl : minSlPcts) {
                         total++;
-                        TradingProperties.StrategyParams p =
-                            buildParams(rt, vm, rr, minSl);
-                        BacktestEngine engine =
-                            new BacktestEngine(capital, leverage, p).setSilent(true);
+                        TradingProperties.StrategyParams p = buildParams(rt, vm, rr, minSl);
+                        BacktestEngine engine = new BacktestEngine(capital, leverage, p).setSilent(true);
                         BacktestResult result;
-                        try {
-                            result = engine.run(klines,
-                                isAggressive
-                                    ? new AggressiveStrategy(p)
-                                    : new ConservativeStrategy(p));
-                        } catch (Exception e) {
-                            continue;
-                        }
+                        try { result = engine.run(klines, createStrategy(strategyType, p)); }
+                        catch (Exception e) { continue; }
 
                         int n = result.getTrades().size();
                         if (n == 0) continue;
                         double winRate  = (double) result.getWins() / n;
                         double drawdown = result.getMaxDrawdown();
-
-                        results.add(new ScoredResult(
-                            calcScore(result), p, result, n, winRate, drawdown));
+                        results.add(new ScoredResult(calcScore(result), p, result, n, winRate, drawdown));
                     }
                 }
             }
         }
+        log.info("{}策略: 搜索 {} 组, 通过 {} 组", strategyType, total, results.size());
+        results.sort(Comparator.comparingDouble(r -> -r.score));
+        return results;
+    }
 
-        log.info("{}策略: 搜索 {} 组, 通过 {} 组",
-            isAggressive ? "激进" : "保守", total, results.size());
+    /** 均值回归策略的搜索空间：buffer / slBuffer / maxSlPct / riskRewardRatio */
+    private List<ScoredResult> runMrGrid(List<KLine> klines, double capital, int leverage) {
+        List<ScoredResult> results = new ArrayList<>();
+
+        double[] buffers       = {0.003, 0.005, 0.008, 0.010};
+        double[] slBuffers     = {0.15, 0.20, 0.30, 0.40};
+        double[] maxSlPcts     = {0.005, 0.008, 0.010, 0.015};
+        double[] rrRatios      = {1.5, 2.0, 2.5, 3.0};
+
+        int total = 0;
+        for (double buf : buffers) {
+            for (double slBuf : slBuffers) {
+                for (double maxSl : maxSlPcts) {
+                    for (double rr : rrRatios) {
+                        total++;
+                        TradingProperties.StrategyParams p = new TradingProperties.StrategyParams();
+                        p.setMrBuffer(buf);
+                        p.setMrSlBuffer(slBuf);
+                        p.setMrMaxSlPct(maxSl);
+                        p.setMrRiskRewardRatio(rr);
+                        BacktestEngine engine = new BacktestEngine(capital, leverage, p).setSilent(true);
+                        BacktestResult result;
+                        try { result = engine.run(klines, new MeanReversionStrategy(p)); }
+                        catch (Exception e) { continue; }
+
+                        int n = result.getTrades().size();
+                        if (n == 0) continue;
+                        double winRate  = (double) result.getWins() / n;
+                        double drawdown = result.getMaxDrawdown();
+                        results.add(new ScoredResult(calcScore(result), p, result, n, winRate, drawdown));
+                    }
+                }
+            }
+        }
+        log.info("均值回归策略: 搜索 {} 组, 通过 {} 组", total, results.size());
         results.sort(Comparator.comparingDouble(r -> -r.score));
         return results;
     }
@@ -116,6 +154,16 @@ public class ParameterOptimizer {
         return expectancy * Math.sqrt(n) * drawdownPenalty * profitFactor;
     }
 
+    private com.trading.signal.strategy.Strategy createStrategy(
+            String type, TradingProperties.StrategyParams p) {
+        return switch (type) {
+            case "aggressive"      -> new AggressiveStrategy(p);
+            case "conservative"    -> new ConservativeStrategy(p);
+            case "mean-reversion"  -> new MeanReversionStrategy(p);
+            default -> throw new IllegalArgumentException("Unknown strategy: " + type);
+        };
+    }
+
     private TradingProperties.StrategyParams buildParams(
             double rt, double vm, double rr, double minSl) {
         TradingProperties.StrategyParams p = new TradingProperties.StrategyParams();
@@ -125,11 +173,13 @@ public class ParameterOptimizer {
         p.setAggMinSlPct(minSl);
         p.setConRiskRewardRatio(rr);
         p.setConMinSlPct(minSl);
+        p.setMrRiskRewardRatio(rr);
+        p.setMrSlBuffer(minSl);
         return p;
     }
 
     private List<Map<String, Object>> formatResults(List<ScoredResult> results, int topN,
-                                                     boolean isAggressive, double capital) {
+                                                     String strategyType, double capital) {
         if (results.isEmpty()) {
             return List.of(Map.of("message", "没有参数组合通过硬性过滤"));
         }
@@ -150,10 +200,19 @@ public class ParameterOptimizer {
             params.put("breakoutWindowLong", r.params.getBreakoutWindowLong());
             params.put("volumeSpikeMultiplier", r.params.getVolumeSpikeMultiplier());
             params.put("trendThreshold", r.params.getTrendThreshold());
-            params.put("riskRewardRatio", isAggressive
-                ? r.params.getAggRiskRewardRatio() : r.params.getConRiskRewardRatio());
-            params.put("minSlPct", isAggressive
-                ? r.params.getAggMinSlPct() : r.params.getConMinSlPct());
+            params.put("riskRewardRatio", "aggressive".equals(strategyType)
+                ? r.params.getAggRiskRewardRatio()
+                : "mean-reversion".equals(strategyType)
+                    ? r.params.getMrRiskRewardRatio()
+                    : r.params.getConRiskRewardRatio());
+            if ("mean-reversion".equals(strategyType)) {
+                params.put("mrBuffer", r.params.getMrBuffer());
+                params.put("mrSlBuffer", r.params.getMrSlBuffer());
+                params.put("mrMaxSlPct", r.params.getMrMaxSlPct());
+            } else {
+                params.put("minSlPct", "aggressive".equals(strategyType)
+                    ? r.params.getAggMinSlPct() : r.params.getConMinSlPct());
+            }
             item.put("params", params);
             list.add(item);
         }

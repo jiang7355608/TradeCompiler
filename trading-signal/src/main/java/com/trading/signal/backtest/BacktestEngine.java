@@ -2,9 +2,12 @@ package com.trading.signal.backtest;
 
 import com.trading.signal.analyzer.MarketAnalyzer;
 import com.trading.signal.config.TradingProperties;
+import com.trading.signal.model.HtfRange;
 import com.trading.signal.model.KLine;
 import com.trading.signal.model.MarketData;
 import com.trading.signal.model.TradeSignal;
+import com.trading.signal.strategy.AggressiveStrategy;
+import com.trading.signal.strategy.MeanReversionStrategy;
 import com.trading.signal.strategy.Strategy;
 
 import java.io.BufferedReader;
@@ -82,6 +85,27 @@ public class BacktestEngine {
     }
 
     /**
+     * 带时间范围的回测
+     * @param startMs 开始时间（毫秒时间戳，包含），0表示不限
+     * @param endMs   结束时间（毫秒时间戳，包含），0表示不限
+     */
+    public BacktestResult run(List<KLine> allKlines, Strategy strategy, long startMs, long endMs) {
+        if (startMs > 0 || endMs > 0) {
+            List<KLine> filtered = new java.util.ArrayList<>();
+            for (KLine k : allKlines) {
+                if (startMs > 0 && k.getTimestamp() < startMs) continue;
+                if (endMs > 0 && k.getTimestamp() > endMs) continue;
+                filtered.add(k);
+            }
+            if (!silent) {
+                System.out.printf("  时间过滤: %d → %d 根K线%n", allKlines.size(), filtered.size());
+            }
+            return run(filtered, strategy);
+        }
+        return run(allKlines, strategy);
+    }
+
+    /**
      * 对指定策略运行回测（使用预加载的K线数据，优化器用）
      */
     public BacktestResult run(List<KLine> allKlines, Strategy strategy) {
@@ -91,6 +115,7 @@ public class BacktestEngine {
         }
 
         BacktestResult result = new BacktestResult(initialCapital, leverage);
+        boolean isStateMachine = strategy instanceof AggressiveStrategy;
 
         boolean inPosition  = false;
         String  posDirection = null;
@@ -99,6 +124,10 @@ public class BacktestEngine {
         double  takeProfit  = 0;
         double  posSize     = 0;
         long    entryTime   = 0;
+        // 状态机：试探仓和加仓分开跟踪
+        boolean inProbe     = false;
+        double  probeSize   = 0;
+        double  addSize     = 0;
 
         int signalCount = 0;
 
@@ -106,7 +135,109 @@ public class BacktestEngine {
 
             KLine current = allKlines.get(i);
 
-            // ── 如果有持仓，先检查当前K线是否触及止损/止盈 ──────────────
+            // ── 状态机策略（AggressiveStrategy）──────────────────────────
+            if (isStateMachine) {
+                AggressiveStrategy agg = (AggressiveStrategy) strategy;
+
+                // 阶段3：已确认持仓 → 回测引擎管止盈止损，不调用策略
+                if (inPosition && !inProbe) {
+                    boolean slHit = "long".equals(posDirection)
+                        ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
+                    boolean tpHit = "long".equals(posDirection)
+                        ? current.getHigh() >= takeProfit : current.getLow() <= takeProfit;
+
+                    if (slHit || tpHit) {
+                        String exitReason = slHit ? "sl" : "tp";
+                        double exitPrice = slHit ? stopLoss : takeProfit;
+                        double pricePct = "long".equals(posDirection)
+                            ? (exitPrice - entryPrice) / entryPrice
+                            : (entryPrice - exitPrice) / entryPrice;
+                        double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
+                        result.addTrade(new BacktestResult.Trade(
+                            entryTime, posDirection, entryPrice,
+                            stopLoss, takeProfit, posSize,
+                            exitReason, pricePct * 100, pnlU));
+                        agg.reset();
+                        inPosition = false;
+                        if (result.getCurrentCapital() <= 0) break;
+                    }
+                    continue;
+                }
+
+                // 阶段1&2：IDLE 或 PROBE → 喂数据给策略
+                List<KLine> window = allKlines.subList(Math.max(0, i - 49), i + 1);
+                if (window.size() < 23) continue;
+
+                try {
+                    MarketData marketData = analyzer.analyze(window);
+                    TradeSignal signal = agg.generateSignal(marketData);
+                    AggressiveStrategy.State st = agg.getState();
+
+                    // 阶段1：开试探仓
+                    if (st == AggressiveStrategy.State.PROBE && !inPosition
+                            && signal.getAction() != TradeSignal.Action.NO_TRADE) {
+                        signalCount++;
+                        inPosition   = true;
+                        inProbe      = true;
+                        posDirection = signal.getAction().getValue();
+                        entryPrice   = current.getClose();
+                        stopLoss     = signal.getStopLoss();
+                        takeProfit   = signal.getTakeProfit();
+                        probeSize    = signal.getPositionSize();
+                        posSize      = probeSize;
+                        entryTime    = current.getTimestamp();
+                    }
+                    // 阶段2：确认加仓
+                    else if (st == AggressiveStrategy.State.CONFIRMED && inPosition && inProbe
+                            && signal.getAction() != TradeSignal.Action.NO_TRADE) {
+                        posSize    = probeSize + signal.getPositionSize();
+                        stopLoss   = signal.getStopLoss();
+                        takeProfit = signal.getTakeProfit();
+                        inProbe    = false; // 进入确认持仓，后续由引擎管止盈止损
+                    }
+                    // 试探失败（策略reset回IDLE）→ 平仓
+                    else if (st == AggressiveStrategy.State.IDLE && inPosition) {
+                        double exitPrice = current.getClose();
+                        double pricePct = "long".equals(posDirection)
+                            ? (exitPrice - entryPrice) / entryPrice
+                            : (entryPrice - exitPrice) / entryPrice;
+                        double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
+                        result.addTrade(new BacktestResult.Trade(
+                            entryTime, posDirection, entryPrice,
+                            stopLoss, takeProfit, posSize,
+                            "probe-fail", pricePct * 100, pnlU));
+                        inPosition = false;
+                        inProbe    = false;
+                        if (result.getCurrentCapital() <= 0) break;
+                    }
+                    else if (!inPosition && signal.getAction() == TradeSignal.Action.NO_TRADE) {
+                        result.recordReject(signal.getReason());
+                    }
+
+                    // 试探仓阶段：引擎兜底止损检查
+                    if (inPosition && inProbe) {
+                        boolean slHit = "long".equals(posDirection)
+                            ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
+                        if (slHit) {
+                            double pricePct = "long".equals(posDirection)
+                                ? (stopLoss - entryPrice) / entryPrice
+                                : (entryPrice - stopLoss) / entryPrice;
+                            double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
+                            result.addTrade(new BacktestResult.Trade(
+                                entryTime, posDirection, entryPrice,
+                                stopLoss, takeProfit, posSize,
+                                "probe-sl", pricePct * 100, pnlU));
+                            agg.reset();
+                            inPosition = false;
+                            inProbe    = false;
+                            if (result.getCurrentCapital() <= 0) break;
+                        }
+                    }
+                } catch (Exception e) { /* skip */ }
+                continue;
+            }
+
+            // ── 非状态机策略（保守/均值回归）：原有逻辑 ──────────────────
             if (inPosition) {
                 boolean slHit = false;
                 boolean tpHit = false;
@@ -143,6 +274,11 @@ public class BacktestEngine {
                         exitReason, pnlPct, pnlU
                     ));
 
+                    // 通知均值回归策略交易结果（熔断机制）
+                    if (strategy instanceof MeanReversionStrategy mr) {
+                        mr.recordTradeResult(pnlU > 0, current.getTimestamp());
+                    }
+
                     inPosition = false;
 
                     // 如果本金归零，停止回测
@@ -162,17 +298,29 @@ public class BacktestEngine {
 
             try {
                 MarketData  marketData = analyzer.analyze(window);
-                TradeSignal signal     = strategy.generateSignal(marketData);
+
+                // 均值回归策略：从15分钟数据聚合4小时K线做大箱体分析
+                TradeSignal signal;
+                if ("mean-reversion".equals(strategy.getName())) {
+                    List<KLine> klines4h = aggregate4h(allKlines, i);
+                    HtfRange htfRange = klines4h.size() >= 23
+                        ? analyzer.analyzeHtf(klines4h) : new HtfRange(false, 0, 0, "neutral");
+                    signal = strategy.generateSignal(marketData, htfRange);
+                } else {
+                    signal = strategy.generateSignal(marketData);
+                }
 
                 if (signal.getAction() != TradeSignal.Action.NO_TRADE) {
                     signalCount++;
                     inPosition   = true;
                     posDirection = signal.getAction().getValue();
-                    entryPrice   = current.getClose(); // 以当前收盘价入场
+                    entryPrice   = current.getClose();
                     stopLoss     = signal.getStopLoss();
                     takeProfit   = signal.getTakeProfit();
                     posSize      = signal.getPositionSize();
                     entryTime    = current.getTimestamp();
+                } else {
+                    result.recordReject(signal.getReason());
                 }
             } catch (Exception e) {
                 // 数据不足或分析异常，跳过这根K线
@@ -231,5 +379,37 @@ public class BacktestEngine {
             System.out.printf("  已加载 %d 根K线 from %s%n", klines.size(), path);
         }
         return klines;
+    }
+
+    /**
+     * 从15分钟K线聚合出4小时K线（16根15m = 1根4h）
+     * 取当前位置之前的数据，最多聚合100根4h K线
+     */
+    private List<KLine> aggregate4h(List<KLine> klines15m, int currentIndex) {
+        int barsPerCandle = 16; // 4h / 15m = 16
+        int maxCandles = 100;
+        List<KLine> result = new ArrayList<>();
+
+        // 从当前位置往前，每16根聚合一根
+        int end = currentIndex + 1; // exclusive
+        int start = Math.max(0, end - maxCandles * barsPerCandle);
+
+        for (int i = start; i + barsPerCandle <= end; i += barsPerCandle) {
+            long   ts   = klines15m.get(i).getTimestamp();
+            double open = klines15m.get(i).getOpen();
+            double high = Double.MIN_VALUE;
+            double low  = Double.MAX_VALUE;
+            double vol  = 0;
+            double close = klines15m.get(Math.min(i + barsPerCandle - 1, end - 1)).getClose();
+
+            for (int j = i; j < i + barsPerCandle && j < end; j++) {
+                KLine k = klines15m.get(j);
+                high = Math.max(high, k.getHigh());
+                low  = Math.min(low, k.getLow());
+                vol += k.getVolume();
+            }
+            result.add(new KLine(ts, open, high, low, close, vol));
+        }
+        return result;
     }
 }

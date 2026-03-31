@@ -3,6 +3,7 @@ package com.trading.signal.backtest;
 import com.trading.signal.config.TradingProperties;
 import com.trading.signal.strategy.AggressiveStrategy;
 import com.trading.signal.strategy.ConservativeStrategy;
+import com.trading.signal.strategy.MeanReversionStrategy;
 
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -66,6 +67,11 @@ public class BacktestRunner {
         System.out.println("\n── Step 2b: 保守策略回测 ─────────────────────────────");
         BacktestResult conResult = engine.run(CSV_FILE, new ConservativeStrategy(params));
         conResult.printSummary("Conservative Strategy");
+
+        // ── 均值回归策略回测 ──────────────────────────────────────────────
+        System.out.println("\n── Step 2c: 均值回归策略回测 ─────────────────────────");
+        BacktestResult mrResult = engine.run(CSV_FILE, new MeanReversionStrategy(params));
+        mrResult.printSummary("Mean Reversion Strategy");
 
         // ── Step 3: 对比总结 ──────────────────────────────────────────────
         printComparison(aggResult, conResult);
