@@ -116,14 +116,14 @@ public class EmailService {
     private String buildSubject(TradeSignal signal, String instId) {
         String reason = signal.getReason();
         String type;
-        if (reason.startsWith("PROBE timeout") || reason.startsWith("PROBE hit")) {
-            type = "CANCEL";  // 试探仓作废
-        } else if (reason.startsWith("PROBE")) {
-            type = "PROBE";   // 试探仓
-        } else if (reason.startsWith("ADD")) {
-            type = "CONFIRM"; // 确认加仓
+        if (reason.contains("PROBE timeout") || reason.contains("PROBE hit")) {
+            type = "CANCEL";
+        } else if (reason.contains("PROBE")) {
+            type = "PROBE";
+        } else if (reason.contains("ADD")) {
+            type = "CONFIRM";
         } else {
-            type = "SIGNAL";  // 其他策略的普通信号
+            type = "SIGNAL";
         }
         return String.format("[%s] %s %s",
             type, instId.toUpperCase(),
@@ -181,6 +181,20 @@ public class EmailService {
         message.setText(body);
 
         Transport.send(message);
+    }
+
+    /**
+     * 通用邮件发送（供 TradeExecutor 等外部调用）
+     */
+    public void sendRawEmail(String subject, String body) {
+        TradingProperties.Email cfg = properties.getEmail();
+        if (!cfg.isEnabled()) return;
+        try {
+            send(cfg, subject, body);
+            log.info("邮件发送成功: {}", subject);
+        } catch (Exception e) {
+            log.error("邮件发送失败: {}", e.getMessage());
+        }
     }
 
     /**

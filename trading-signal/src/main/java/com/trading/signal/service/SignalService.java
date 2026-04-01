@@ -32,16 +32,19 @@ public class SignalService {
     private final SignalWriter      signalWriter;
     private final EmailService      emailService;
     private final TradingProperties properties;
+    private final TradeExecutor     tradeExecutor;
 
     public SignalService(OkxClient okxClient, MarketAnalyzer analyzer,
                          StrategyRouter strategyRouter, SignalWriter signalWriter,
-                         EmailService emailService, TradingProperties properties) {
+                         EmailService emailService, TradingProperties properties,
+                         TradeExecutor tradeExecutor) {
         this.okxClient      = okxClient;
         this.analyzer       = analyzer;
         this.strategyRouter = strategyRouter;
         this.signalWriter   = signalWriter;
         this.emailService   = emailService;
         this.properties     = properties;
+        this.tradeExecutor  = tradeExecutor;
     }
 
     /**
@@ -91,20 +94,55 @@ public class SignalService {
             // Step 4: 写入 signal.json
             signalWriter.write(marketData, tradeSignal, strategy.getName());
 
-            // Step 5: 邮件通知
-            emailService.sendSignalEmail(tradeSignal, marketData.getCurrentPrice());
-
-            // 试探仓作废通知（NO_TRADE 但需要通知人平仓）
-            if (tradeSignal.getAction() == TradeSignal.Action.NO_TRADE) {
-                String reason = tradeSignal.getReason();
-                if (reason.startsWith("PROBE timeout") || reason.startsWith("PROBE hit")) {
-                    emailService.sendCancelEmail(reason, marketData.getCurrentPrice());
-                }
+            // Step 5: 执行下单 / 平仓
+            if (properties.getTradeApi().isEnabled()) {
+                handleExecution(strategy, tradeSignal, marketData.getCurrentPrice());
+            } else {
+                // 未启用自动下单时仅发邮件
+                emailService.sendSignalEmail(tradeSignal, marketData.getCurrentPrice());
             }
 
         } catch (Exception e) {
             log.error("本轮执行出错: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * 统一处理下单/平仓逻辑，避免重复调用
+     */
+    private void handleExecution(Strategy strategy, TradeSignal tradeSignal, double currentPrice) {
+        String reason = tradeSignal.getReason();
+
+        // ── 均值回归：加仓信号 ────────────────────────────────────────────
+        if (strategy instanceof com.trading.signal.strategy.MeanReversionStrategy mr
+                && reason.contains("ADD")) {
+            boolean addOk = tradeExecutor.execute(tradeSignal, currentPrice);
+            if (addOk) {
+                mr.confirmHandedOff();
+            } else {
+                log.error("加仓下单失败，策略状态保持 CONFIRMED，不重置");
+            }
+            return;
+        }
+
+        // ── 均值回归：试探仓止损/超时 → 平仓 ────────────────────────────
+        if (tradeSignal.getAction() == TradeSignal.Action.NO_TRADE) {
+            if (reason.startsWith("MR-PROBE timeout") || reason.startsWith("MR-PROBE hit")) {
+                if (strategy instanceof com.trading.signal.strategy.MeanReversionStrategy mr) {
+                    boolean closeOk = tradeExecutor.closeProbe(mr.getDirection());
+                    if (!closeOk) {
+                        log.error("【警告】试探仓平仓失败，请立即手动处理！原因: {}", reason);
+                        emailService.sendCancelEmail("【紧急】平仓失败，请立即手动处理: " + reason, currentPrice);
+                        return;
+                    }
+                }
+                emailService.sendCancelEmail(reason, currentPrice);
+            }
+            return;
+        }
+
+        // ── 通用开仓信号 ──────────────────────────────────────────────────
+        tradeExecutor.execute(tradeSignal, currentPrice);
     }
 
     /**

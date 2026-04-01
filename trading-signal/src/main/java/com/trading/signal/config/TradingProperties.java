@@ -36,6 +36,9 @@ public class TradingProperties {
     public void setBacktest(Backtest v)      { this.backtest = v; }
     public Proxy getProxy()                  { return proxy; }
     public void setProxy(Proxy v)            { this.proxy = v; }
+    private TradeApi tradeApi = new TradeApi();
+    public TradeApi getTradeApi()            { return tradeApi; }
+    public void setTradeApi(TradeApi v)      { this.tradeApi = v; }
 
     // ── OKX 连接配置 ──────────────────────────────────────────────────────
     public static class Okx {
@@ -244,5 +247,27 @@ public class TradingProperties {
         public void    setHost(String v)    { this.host = v; }
         public int     getPort()            { return port; }
         public void    setPort(int v)       { this.port = v; }
+    }
+
+    public static class TradeApi {
+        private boolean enabled    = false;
+        private String  apiKey     = "";
+        private String  secretKey  = "";
+        private String  passphrase = "";
+        private boolean simulated  = true;
+        private int     leverage   = 20;
+
+        public boolean isEnabled()            { return enabled; }
+        public void    setEnabled(boolean v)  { this.enabled = v; }
+        public String  getApiKey()            { return apiKey; }
+        public void    setApiKey(String v)    { this.apiKey = v; }
+        public String  getSecretKey()         { return secretKey; }
+        public void    setSecretKey(String v) { this.secretKey = v; }
+        public String  getPassphrase()        { return passphrase; }
+        public void    setPassphrase(String v){ this.passphrase = v; }
+        public boolean isSimulated()          { return simulated; }
+        public void    setSimulated(boolean v){ this.simulated = v; }
+        public int     getLeverage()          { return leverage; }
+        public void    setLeverage(int v)     { this.leverage = v; }
     }
 }
