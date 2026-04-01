@@ -89,15 +89,24 @@ public class MarketAnalyzer {
 
         double amplitude = (last.getHigh() - last.getLow()) / last.getClose();
 
-        log.debug("分析 b6={} b14={} range={} volSpike={} cont={} strongCont={} trend={} price={}",
-            breakout6, breakout14, isRange, volumeSpike, continuation, strongCont, trendBias,
-            String.format("%.2f", last.getClose()));
+        // ── ATR（14周期平均真实波幅）────────────────────────────────────
+        double atr = calcAtr(klines, 14);
+
+        // ── EMA50（中期趋势）──────────────────────────────────────────
+        double ema50 = size > 50 ? calcEma(klines.subList(size - 51, size - 1), 50) : ema20;
+
+        // ── 趋势成立检测（4重确认）──────────────────────────────────────
+        String trendEstablished = detectEstablishedTrend(klines, ema5, ema20, ema50, atr);
+
+        log.debug("分析 b6={} b14={} range={} trend={} established={} atr={} price={}",
+            breakout6, breakout14, isRange, trendBias, trendEstablished,
+            String.format("%.2f", atr), String.format("%.2f", last.getClose()));
 
         return new MarketData(
             isRange, volumeSpike, breakout6, continuation,
             last.getClose(), maxHigh6, minLow6, amplitude, last, avgVolume20,
             trendBias, strongCont, breakout14, maxHigh14, minLow14, prev, prev2,
-            ema5, ema20
+            ema5, ema20, atr, ema50, trendEstablished
         );
     }
 
@@ -109,6 +118,91 @@ public class MarketAnalyzer {
             ema = klines.get(i).getClose() * k + ema * (1 - k);
         }
         return ema;
+    }
+
+    /**
+     * 计算 ATR（Average True Range）
+     * TR = max(high-low, |high-prevClose|, |low-prevClose|)
+     * ATR = SMA of TR over period
+     */
+    private double calcAtr(List<KLine> klines, int period) {
+        int size = klines.size();
+        if (size < period + 1) return 0.0;
+        double sum = 0;
+        for (int i = size - period; i < size; i++) {
+            KLine cur = klines.get(i);
+            double prevClose = klines.get(i - 1).getClose();
+            double tr = Math.max(cur.getHigh() - cur.getLow(),
+                        Math.max(Math.abs(cur.getHigh() - prevClose),
+                                 Math.abs(cur.getLow() - prevClose)));
+            sum += tr;
+        }
+        return sum / period;
+    }
+
+    /**
+     * 趋势成立检测（4重确认，全部满足才返回方向）
+     *
+     * 1. 结构确认：最近10根K线中至少有3组 HH+HL（做多）或 LH+LL（做空）
+     * 2. 时间确认：EMA排列持续至少10根K线
+     * 3. EMA slope：EMA20 斜率持续为正/负（最近5根EMA20都在上升/下降）
+     * 4. 波动确认：最近5根ATR的均值 > 前10根ATR的均值（波动在扩张）
+     */
+    private String detectEstablishedTrend(List<KLine> klines, double ema5, double ema20,
+                                           double ema50, double currentAtr) {
+        int size = klines.size();
+        if (size < 20) return "none";
+
+        // ── 1. EMA Alignment ──────────────────────────────────────────
+        boolean bullAlign = ema5 > ema20 && ema20 > ema50;
+        boolean bearAlign = ema5 < ema20 && ema20 < ema50;
+        if (!bullAlign && !bearAlign) return "none";
+
+        // ── 2. 结构确认：最近10根K线的 HH/HL 或 LH/LL ────────────────
+        int hhHlCount = 0, lhLlCount = 0;
+        for (int i = size - 9; i < size - 1; i++) {
+            KLine cur  = klines.get(i);
+            KLine prev = klines.get(i - 1);
+            if (cur.getHigh() > prev.getHigh() && cur.getLow() > prev.getLow()) hhHlCount++;
+            if (cur.getHigh() < prev.getHigh() && cur.getLow() < prev.getLow()) lhLlCount++;
+        }
+        if (bullAlign && hhHlCount < 3) return "none";
+        if (bearAlign && lhLlCount < 3) return "none";
+
+        // ── 3. EMA20 slope：最近5根EMA20持续同向 ──────────────────────
+        // 用最近6根K线的收盘价算5个EMA20快照，检查斜率一致性
+        List<KLine> recentForSlope = klines.subList(size - 6, size);
+        double prevEma = calcEma(klines.subList(size - p.getEmaLong() - 6, size - 5), p.getEmaLong());
+        int slopeUpCount = 0, slopeDownCount = 0;
+        for (int i = 1; i <= 5; i++) {
+            double curEma = calcEma(klines.subList(size - p.getEmaLong() - 6 + i, size - 5 + i), p.getEmaLong());
+            if (curEma > prevEma) slopeUpCount++;
+            else if (curEma < prevEma) slopeDownCount++;
+            prevEma = curEma;
+        }
+        if (bullAlign && slopeUpCount < 4) return "none";   // 至少4/5根斜率向上
+        if (bearAlign && slopeDownCount < 4) return "none";
+
+        // ── 4. 波动确认：近期ATR > 前期ATR（趋势在加速，不是衰减）────
+        if (size < 16) return "none";
+        double recentAtrSum = 0, olderAtrSum = 0;
+        for (int i = size - 5; i < size; i++) {
+            KLine cur = klines.get(i);
+            double prevClose = klines.get(i - 1).getClose();
+            recentAtrSum += Math.max(cur.getHigh() - cur.getLow(),
+                Math.max(Math.abs(cur.getHigh() - prevClose), Math.abs(cur.getLow() - prevClose)));
+        }
+        for (int i = size - 15; i < size - 5; i++) {
+            KLine cur = klines.get(i);
+            double prevClose = klines.get(i - 1).getClose();
+            olderAtrSum += Math.max(cur.getHigh() - cur.getLow(),
+                Math.max(Math.abs(cur.getHigh() - prevClose), Math.abs(cur.getLow() - prevClose)));
+        }
+        double recentAvgAtr = recentAtrSum / 5;
+        double olderAvgAtr  = olderAtrSum / 10;
+        if (recentAvgAtr < olderAvgAtr * 0.8) return "none"; // 波动在收缩，趋势可能衰减
+
+        return bullAlign ? "up" : "down";
     }
 
     /**

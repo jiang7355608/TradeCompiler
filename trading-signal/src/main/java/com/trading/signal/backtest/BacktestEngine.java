@@ -38,7 +38,7 @@ import java.util.List;
  */
 public class BacktestEngine {
 
-    private static final int WARMUP_BARS = 50;
+    private static final int WARMUP_BARS = 60;
 
     private final MarketAnalyzer analyzer;
     private final double         initialCapital;
@@ -115,7 +115,8 @@ public class BacktestEngine {
         }
 
         BacktestResult result = new BacktestResult(initialCapital, leverage);
-        boolean isStateMachine = strategy instanceof AggressiveStrategy;
+        boolean isStateMachine = strategy instanceof AggressiveStrategy
+                              || strategy instanceof MeanReversionStrategy;
 
         boolean inPosition  = false;
         String  posDirection = null;
@@ -127,7 +128,10 @@ public class BacktestEngine {
         // 状态机：试探仓和加仓分开跟踪
         boolean inProbe     = false;
         double  probeSize   = 0;
-        double  addSize     = 0;
+        // v5 trailing stop 用
+        double  highestSinceEntry = 0;
+        double  lowestSinceEntry  = Double.MAX_VALUE;
+        double  entryAtr    = 0;
 
         int signalCount = 0;
 
@@ -135,12 +139,26 @@ public class BacktestEngine {
 
             KLine current = allKlines.get(i);
 
-            // ── 状态机策略（AggressiveStrategy）──────────────────────────
+            // ── 状态机策略 ─────────────────────────────────────────────────
             if (isStateMachine) {
-                AggressiveStrategy agg = (AggressiveStrategy) strategy;
+                boolean isAgg = strategy instanceof AggressiveStrategy;
+                boolean isMr  = strategy instanceof MeanReversionStrategy;
 
-                // 阶段3：已确认持仓 → 回测引擎管止盈止损，不调用策略
+                // 持仓中 → 引擎管止盈止损
                 if (inPosition && !inProbe) {
+                    // Trailing stop（仅激进策略）
+                    if (isAgg) {
+                        if ("long".equals(posDirection) && current.getHigh() > highestSinceEntry) {
+                            highestSinceEntry = current.getHigh();
+                            double trailSl = highestSinceEntry - entryAtr * 3.0;
+                            if (trailSl > stopLoss) stopLoss = trailSl;
+                        } else if ("short".equals(posDirection) && current.getLow() < lowestSinceEntry) {
+                            lowestSinceEntry = current.getLow();
+                            double trailSl = lowestSinceEntry + entryAtr * 3.0;
+                            if (trailSl < stopLoss) stopLoss = trailSl;
+                        }
+                    }
+
                     boolean slHit = "long".equals(posDirection)
                         ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
                     boolean tpHit = "long".equals(posDirection)
@@ -157,80 +175,131 @@ public class BacktestEngine {
                             entryTime, posDirection, entryPrice,
                             stopLoss, takeProfit, posSize,
                             exitReason, pricePct * 100, pnlU));
-                        agg.reset();
+                        if (isAgg) ((AggressiveStrategy) strategy).reset();
+                        if (isMr) {
+                            MeanReversionStrategy mr = (MeanReversionStrategy) strategy;
+                            mr.recordTradeResult(pnlU > 0, current.getTimestamp());
+                            mr.reset();
+                        }
                         inPosition = false;
                         if (result.getCurrentCapital() <= 0) break;
                     }
                     continue;
                 }
 
-                // 阶段1&2：IDLE 或 PROBE → 喂数据给策略
-                List<KLine> window = allKlines.subList(Math.max(0, i - 49), i + 1);
-                if (window.size() < 23) continue;
-
-                try {
-                    MarketData marketData = analyzer.analyze(window);
-                    TradeSignal signal = agg.generateSignal(marketData);
-                    AggressiveStrategy.State st = agg.getState();
-
-                    // 阶段1：开试探仓
-                    if (st == AggressiveStrategy.State.PROBE && !inPosition
-                            && signal.getAction() != TradeSignal.Action.NO_TRADE) {
-                        signalCount++;
-                        inPosition   = true;
-                        inProbe      = true;
-                        posDirection = signal.getAction().getValue();
-                        entryPrice   = current.getClose();
-                        stopLoss     = signal.getStopLoss();
-                        takeProfit   = signal.getTakeProfit();
-                        probeSize    = signal.getPositionSize();
-                        posSize      = probeSize;
-                        entryTime    = current.getTimestamp();
-                    }
-                    // 阶段2：确认加仓
-                    else if (st == AggressiveStrategy.State.CONFIRMED && inPosition && inProbe
-                            && signal.getAction() != TradeSignal.Action.NO_TRADE) {
-                        posSize    = probeSize + signal.getPositionSize();
-                        stopLoss   = signal.getStopLoss();
-                        takeProfit = signal.getTakeProfit();
-                        inProbe    = false; // 进入确认持仓，后续由引擎管止盈止损
-                    }
-                    // 试探失败（策略reset回IDLE）→ 平仓
-                    else if (st == AggressiveStrategy.State.IDLE && inPosition) {
-                        double exitPrice = current.getClose();
+                // 试探仓阶段：检查止损
+                if (inPosition && inProbe) {
+                    boolean slHit = "long".equals(posDirection)
+                        ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
+                    if (slHit) {
                         double pricePct = "long".equals(posDirection)
-                            ? (exitPrice - entryPrice) / entryPrice
-                            : (entryPrice - exitPrice) / entryPrice;
+                            ? (stopLoss - entryPrice) / entryPrice
+                            : (entryPrice - stopLoss) / entryPrice;
                         double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
                         result.addTrade(new BacktestResult.Trade(
                             entryTime, posDirection, entryPrice,
                             stopLoss, takeProfit, posSize,
-                            "probe-fail", pricePct * 100, pnlU));
-                        inPosition = false;
-                        inProbe    = false;
+                            "probe-sl", pricePct * 100, pnlU));
+                        if (isAgg) ((AggressiveStrategy) strategy).reset();
+                        if (isMr) {
+                            MeanReversionStrategy mr = (MeanReversionStrategy) strategy;
+                            mr.recordTradeResult(false, current.getTimestamp());
+                            mr.reset();
+                        }
+                        inPosition = false; inProbe = false;
                         if (result.getCurrentCapital() <= 0) break;
+                        continue;
                     }
-                    else if (!inPosition && signal.getAction() == TradeSignal.Action.NO_TRADE) {
-                        result.recordReject(signal.getReason());
+                }
+
+                // 喂数据给策略
+                List<KLine> window = allKlines.subList(Math.max(0, i - 59), i + 1);
+                if (window.size() < 23) continue;
+
+                try {
+                    MarketData marketData = analyzer.analyze(window);
+                    TradeSignal signal = strategy.generateSignal(marketData);
+
+                    // 判断策略状态
+                    boolean isConfirmed = false;
+                    boolean isProbeState = false;
+                    boolean isIdle = false;
+                    if (isAgg) {
+                        AggressiveStrategy a = (AggressiveStrategy) strategy;
+                        isConfirmed = a.getState() == AggressiveStrategy.State.CONFIRMED;
+                        isIdle = a.getState() == AggressiveStrategy.State.IDLE;
+                    } else if (isMr) {
+                        MeanReversionStrategy m = (MeanReversionStrategy) strategy;
+                        isConfirmed = m.getState() == MeanReversionStrategy.State.CONFIRMED;
+                        isProbeState = m.getState() == MeanReversionStrategy.State.PROBE;
+                        isIdle = m.getState() == MeanReversionStrategy.State.IDLE;
                     }
 
-                    // 试探仓阶段：引擎兜底止损检查
-                    if (inPosition && inProbe) {
-                        boolean slHit = "long".equals(posDirection)
-                            ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
-                        if (slHit) {
+                    if (signal.getAction() != TradeSignal.Action.NO_TRADE) {
+                        if (isProbeState && !inPosition) {
+                            // 试探仓入场
+                            signalCount++;
+                            inPosition = true; inProbe = true;
+                            posDirection = signal.getAction().getValue();
+                            entryPrice = current.getClose();
+                            stopLoss = signal.getStopLoss();
+                            takeProfit = signal.getTakeProfit();
+                            probeSize = signal.getPositionSize();
+                            posSize = probeSize;
+                            entryTime = current.getTimestamp();
+                            entryAtr = marketData.getAtr();
+                            highestSinceEntry = current.getHigh();
+                            lowestSinceEntry = current.getLow();
+                        } else if (isConfirmed && !inPosition) {
+                            // 直接入场（AggressiveStrategy v5）
+                            signalCount++;
+                            inPosition = true;
+                            posDirection = signal.getAction().getValue();
+                            entryPrice = current.getClose();
+                            stopLoss = signal.getStopLoss();
+                            takeProfit = signal.getTakeProfit();
+                            posSize = signal.getPositionSize();
+                            entryTime = current.getTimestamp();
+                            entryAtr = marketData.getAtr();
+                            highestSinceEntry = current.getHigh();
+                            lowestSinceEntry = current.getLow();
+                        } else if (isConfirmed && inPosition && inProbe) {
+                            // 加仓确认：先结算试探仓盈亏，再开确认仓
+                            double probeExitPrice = current.getClose();
+                            double probePricePct = "long".equals(posDirection)
+                                ? (probeExitPrice - entryPrice) / entryPrice
+                                : (entryPrice - probeExitPrice) / entryPrice;
+                            double probePnlU = result.getCurrentCapital() * probeSize * leverage * probePricePct;
+                            result.addTrade(new BacktestResult.Trade(
+                                entryTime, posDirection, entryPrice,
+                                stopLoss, takeProfit, probeSize,
+                                "probe-confirmed", probePricePct * 100, probePnlU));
+
+                            // 开确认仓（新的入场价、新的仓位）
+                            entryPrice = current.getClose();
+                            posSize = signal.getPositionSize(); // 30%
+                            stopLoss = signal.getStopLoss();
+                            takeProfit = signal.getTakeProfit();
+                            entryTime = current.getTimestamp();
+                            inProbe = false;
+                        }
+                    } else {
+                        // 策略reset回IDLE且有持仓 → 试探失败平仓
+                        if (isIdle && inPosition) {
+                            double exitPrice = current.getClose();
                             double pricePct = "long".equals(posDirection)
-                                ? (stopLoss - entryPrice) / entryPrice
-                                : (entryPrice - stopLoss) / entryPrice;
+                                ? (exitPrice - entryPrice) / entryPrice
+                                : (entryPrice - exitPrice) / entryPrice;
                             double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
                             result.addTrade(new BacktestResult.Trade(
                                 entryTime, posDirection, entryPrice,
                                 stopLoss, takeProfit, posSize,
-                                "probe-sl", pricePct * 100, pnlU));
-                            agg.reset();
-                            inPosition = false;
-                            inProbe    = false;
+                                "probe-fail", pricePct * 100, pnlU));
+                            if (isMr) ((MeanReversionStrategy) strategy).recordTradeResult(pnlU > 0, current.getTimestamp());
+                            inPosition = false; inProbe = false;
                             if (result.getCurrentCapital() <= 0) break;
+                        } else if (!inPosition) {
+                            result.recordReject(signal.getReason());
                         }
                     }
                 } catch (Exception e) { /* skip */ }

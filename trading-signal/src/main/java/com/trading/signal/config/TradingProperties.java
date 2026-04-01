@@ -111,6 +111,12 @@ public class TradingProperties {
         private double aggPositionStrong    = 0.30;
         private double aggPositionWeak      = 0.15;
         private long   aggCooldownMs        = 300000;
+        // AggressiveStrategy 状态机参数
+        private double aggConfirmAtrMult    = 1.5;    // 确认阈值 = ATR × 此值
+        private double aggSlAtrMult         = 1.5;    // 止损距离 = ATR × 此值
+        private double aggTpAtrMult         = 4.5;    // 止盈距离 = ATR × 此值
+        private long   aggProbeTimeoutMs    = 10800000; // 试探仓超时（3小时）
+        private double aggTrendAtrMult      = 0.5;    // 趋势判定：EMA偏离 > ATR × 此值
         // ConservativeStrategy
         private double conRiskRewardRatio   = 2.5;
         private double conMinSlPct          = 0.002;
@@ -125,7 +131,11 @@ public class TradingProperties {
         private double mrMaxSlPct           = 0.01;   // 最大止损距离上限（价格的1%）
         private double mrPosition           = 0.20;   // 仓位比例
         private long   mrCooldownMs         = 2700000; // 冷却期45分钟
-        private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限（0.2%），超过禁止均值回归
+        private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限
+        // 人工定义大箱体上下沿
+        private double mrRangeHigh          = 73000;  // 上沿
+        private double mrRangeLow           = 66500;  // 下沿
+        private double mrEntryBuffer        = 500;    // 接近边沿的缓冲区（美元）
 
         public int    getRangeWindow()              { return rangeWindow; }
         public void   setRangeWindow(int v)         { this.rangeWindow = v; }
@@ -161,6 +171,16 @@ public class TradingProperties {
         public void   setAggPositionWeak(double v)  { this.aggPositionWeak = v; }
         public long   getAggCooldownMs()            { return aggCooldownMs; }
         public void   setAggCooldownMs(long v)      { this.aggCooldownMs = v; }
+        public double getAggConfirmAtrMult()        { return aggConfirmAtrMult; }
+        public void   setAggConfirmAtrMult(double v){ this.aggConfirmAtrMult = v; }
+        public double getAggSlAtrMult()             { return aggSlAtrMult; }
+        public void   setAggSlAtrMult(double v)     { this.aggSlAtrMult = v; }
+        public double getAggTpAtrMult()             { return aggTpAtrMult; }
+        public void   setAggTpAtrMult(double v)     { this.aggTpAtrMult = v; }
+        public long   getAggProbeTimeoutMs()        { return aggProbeTimeoutMs; }
+        public void   setAggProbeTimeoutMs(long v)  { this.aggProbeTimeoutMs = v; }
+        public double getAggTrendAtrMult()          { return aggTrendAtrMult; }
+        public void   setAggTrendAtrMult(double v)  { this.aggTrendAtrMult = v; }
         public double getConRiskRewardRatio()       { return conRiskRewardRatio; }
         public void   setConRiskRewardRatio(double v){ this.conRiskRewardRatio = v; }
         public double getConMinSlPct()              { return conMinSlPct; }
@@ -187,6 +207,12 @@ public class TradingProperties {
         public void   setMrCooldownMs(long v)       { this.mrCooldownMs = v; }
         public double getMrTrendStrengthLimit()      { return mrTrendStrengthLimit; }
         public void   setMrTrendStrengthLimit(double v) { this.mrTrendStrengthLimit = v; }
+        public double getMrRangeHigh()              { return mrRangeHigh; }
+        public void   setMrRangeHigh(double v)      { this.mrRangeHigh = v; }
+        public double getMrRangeLow()               { return mrRangeLow; }
+        public void   setMrRangeLow(double v)       { this.mrRangeLow = v; }
+        public double getMrEntryBuffer()            { return mrEntryBuffer; }
+        public void   setMrEntryBuffer(double v)    { this.mrEntryBuffer = v; }
     }
 
     // ── 回测配置 ──────────────────────────────────────────────────────────

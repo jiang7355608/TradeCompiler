@@ -8,35 +8,50 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
- * AggressiveStrategy — 状态机模型
+ * AggressiveStrategy v5 — Pullback Continuation（回调续势）
  *
- * 模拟人类交易员的决策流程：
- *   IDLE → 发现方向信号 → 开试探仓（小仓位）
- *   PROBE → 价格确认 → 加仓（大仓位）/ 未确认 → 平仓认赔
- *   CONFIRMED → 止盈或止损 → 回到 IDLE
+ * ═══ Edge ═══
+ * BTC趋势确立后，回调到均线附近是低风险入场点。
+ * 不预测方向，不追突破。等趋势成立 → 等回调 → 回调结束续势时入场。
  *
- * 入场条件简单：EMA方向 + 价格动量（不需要横盘、不需要双窗口突破）
- * 确认条件：试探仓盈利超过阈值
+ * ═══ 与之前版本的根本区别 ═══
+ * v1-v4: 试图在趋势启动时入场（breakout），大量假突破导致低胜率
+ * v5:    等趋势已经走了一段，回调到支撑位再入场，胜率和盈亏比同时提升
  *
- * 信号输出：
- *   PROBE_LONG / PROBE_SHORT — 试探仓信号（小仓位）
- *   ADD_LONG / ADD_SHORT — 加仓信号（大仓位，回测引擎处理）
- *   CLOSE — 平仓信号（试探失败或止盈止损）
+ * ═══ 入场条件（全部满足）═══
+ * 1. EMA Alignment: EMA5 > EMA20 > EMA50（做多）或反向（做空）
+ * 2. 价格回调到EMA20附近（距离 < 0.5×ATR）
+ * 3. 回调结束信号：当前K线收盘重新朝趋势方向（反弹/回落确认）
+ * 4. 结构完整：最近K线维持 Higher High/Higher Low（做多）或反向
+ *
+ * ═══ 出场 ═══
+ * SL: 2×ATR（固定，入场时确定）
+ * TP: 无固定止盈，回测引擎用 Trailing Stop（最高/低价 - 3×ATR）
+ *     实盘由人管理
+ *
+ * ═══ 风控 ═══
+ * 仓位 = 本金2%风险 / (2×ATR×杠杆)
+ * 每天最多2-3笔（冷却期控制）
+ * 无PROBE机制——条件满足直接入场，不满足不交易
  */
 @Component
 public class AggressiveStrategy implements Strategy {
 
-    public enum State { IDLE, PROBE, CONFIRMED }
+    public enum State { IDLE, CONFIRMED }
 
     private final TradingProperties.StrategyParams p;
 
-    // ── 状态机 ────────────────────────────────────────────────────────────
     private State  state = State.IDLE;
-    private String direction;       // "up" / "down"
-    private double probeEntryPrice; // 试探仓入场价
-    private long   probeEntryTime;  // 试探仓入场时间（K线时间戳）
+    private String direction;
+    private double entryPrice;
     private double stopLoss;
     private double takeProfit;
+    private double entryAtr;
+    private long   lastTradeTime;
+    private double highestSinceEntry;
+    private double lowestSinceEntry;
+    private int    dailyTradeCount;
+    private long   currentDay;
 
     @Autowired
     public AggressiveStrategy(TradingProperties props) {
@@ -47,137 +62,118 @@ public class AggressiveStrategy implements Strategy {
         this.p = params;
     }
 
-    @Override
-    public String getName() { return "aggressive"; }
-
+    @Override public String getName() { return "aggressive"; }
     public State getState() { return state; }
+    public double getStopLoss() { return stopLoss; }
+    public double getTakeProfit() { return takeProfit; }
 
     @Override
     public TradeSignal generateSignal(MarketData data) {
         return switch (state) {
             case IDLE      -> evaluateEntry(data);
-            case PROBE     -> evaluateConfirmation(data);
             case CONFIRMED -> evaluateExit(data);
         };
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // IDLE → 寻找方向信号，开试探仓
+    // IDLE → 等待完美 setup：趋势确立 + 回调到均线 + 续势确认
     // ══════════════════════════════════════════════════════════════════════
     private TradeSignal evaluateEntry(MarketData data) {
-        KLine last  = data.getLastKline();
-        KLine prev  = data.getPrevKline();
-        KLine prev2 = data.getPrev2Kline();
-        String trend = data.getTrendBias();
+        double atr   = data.getAtr();
+        double price = data.getCurrentPrice();
+        long   now   = data.getLastKline().getTimestamp();
 
-        // 做多条件：EMA趋势向上 + 连续两根阳线（价格动量）
-        boolean longSignal = "up".equals(trend)
-            && last.getClose() > prev.getClose()
-            && prev.getClose() > prev2.getClose();
+        if (atr <= 0) return noTrade("IDLE: ATR=0");
 
-        // 做空条件：EMA趋势向下 + 连续两根阴线
-        boolean shortSignal = "down".equals(trend)
-            && last.getClose() < prev.getClose()
-            && prev.getClose() < prev2.getClose();
+        // 每日交易次数限制
+        long day = now / 86400000L;
+        if (day != currentDay) { currentDay = day; dailyTradeCount = 0; }
+        if (dailyTradeCount >= 3) return noTrade("IDLE: daily limit reached");
 
-        if (!longSignal && !shortSignal) {
-            return noTrade(String.format("IDLE: no momentum (trend=%s)", trend));
+        // 冷却
+        if (now - lastTradeTime < p.getAggCooldownMs()) {
+            return noTrade("IDLE: cooldown");
         }
 
-        // 开试探仓
-        double price = data.getCurrentPrice();
-        direction = longSignal ? "up" : "down";
-        probeEntryPrice = price;
-        probeEntryTime  = last.getTimestamp();
+        // ═══ 核心门控：趋势必须已成立（4重确认全部通过）═══
+        String established = data.getTrendEstablished();
+        if ("none".equals(established)) {
+            return noTrade("IDLE: trend not established");
+        }
 
-        // 止损：前一根K线中点
-        double prevMid = (prev.getHigh() + prev.getLow()) / 2.0;
-        double slDistance = Math.max(Math.abs(price - prevMid), price * p.getAggMinSlPct());
-        stopLoss   = "up".equals(direction) ? price - slDistance : price + slDistance;
-        takeProfit = "up".equals(direction)
-            ? price + slDistance * p.getAggRiskRewardRatio()
-            : price - slDistance * p.getAggRiskRewardRatio();
+        double ema20 = data.getEma20();
+        KLine last   = data.getLastKline();
+        KLine prev   = data.getPrevKline();
+        KLine prev2  = data.getPrev2Kline();
 
-        state = State.PROBE;
+        // ── 回调到EMA20附近（距离 < 0.8×ATR）────────────────────────
+        double distToEma20 = Math.abs(price - ema20);
+        if (distToEma20 > atr * 0.8) {
+            return noTrade(String.format("IDLE: price too far from EMA20 (dist=%.0f > 0.8×ATR=%.0f)",
+                distToEma20, atr * 0.8));
+        }
+
+        // ── 回调结束确认：前一根逆势 + 当前顺势 ──────────────────────
+        boolean pullbackBounce;
+        if ("up".equals(established)) {
+            pullbackBounce = prev.getClose() < prev2.getClose()
+                          && last.getClose() > prev.getClose();
+        } else {
+            pullbackBounce = prev.getClose() > prev2.getClose()
+                          && last.getClose() < prev.getClose();
+        }
+
+        if (!pullbackBounce) {
+            return noTrade(String.format("IDLE: no pullback bounce (trend=%s)", established));
+        }
+
+        // ═══ 全部条件满足，入场 ═══
+        direction = established;
+        entryPrice = price;
+        entryAtr   = atr;
+        highestSinceEntry = price;
+        lowestSinceEntry  = price;
+        lastTradeTime = now;
+        dailyTradeCount++;
+
+        double slDist = atr * p.getAggSlAtrMult();
+        stopLoss = "up".equals(direction) ? price - slDist : price + slDist;
+        double tpDist = atr * p.getAggTpAtrMult();
+        takeProfit = "up".equals(direction) ? price + tpDist : price - tpDist;
+
+        // 仓位：单笔风险 ≤ 本金2%
+        double riskPerUnit = slDist / price * 20;
+        double position = Math.min(0.02 / riskPerUnit, 0.30);
+        position = Math.max(position, 0.05);
+
+        state = State.CONFIRMED;
 
         TradeSignal.Action action = "up".equals(direction)
             ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
         return new TradeSignal(action,
-            String.format("PROBE %s: trend=%s momentum confirmed — SL=%.2f TP=%.2f",
-                direction.toUpperCase(), trend, stopLoss, takeProfit),
-            0.50, p.getAggPositionWeak(), stopLoss, takeProfit);
+            String.format("ENTRY %s: trend-established + pullback-bounce ATR=%.0f pos=%.0f%% SL=%.2f TP=%.2f",
+                direction.toUpperCase(), atr, position * 100, stopLoss, takeProfit),
+            0.75, position, stopLoss, takeProfit);
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PROBE → 检查试探仓是否确认（盈利超过阈值）或失败
-    // ══════════════════════════════════════════════════════════════════════
-    private TradeSignal evaluateConfirmation(MarketData data) {
-        double price = data.getCurrentPrice();
-        long   now   = data.getLastKline().getTimestamp();
-
-        // 计算试探仓浮盈
-        double pnlPct = "up".equals(direction)
-            ? (price - probeEntryPrice) / probeEntryPrice
-            : (probeEntryPrice - price) / probeEntryPrice;
-
-        // 确认条件：浮盈超过0.3%（方向对了）
-        if (pnlPct > 0.003) {
-            state = State.CONFIRMED;
-
-            // 加仓信号：更新止损到保本附近，保持原止盈
-            double newSl = "up".equals(direction)
-                ? probeEntryPrice + (price - probeEntryPrice) * 0.2  // 保护20%浮盈
-                : probeEntryPrice - (probeEntryPrice - price) * 0.2;
-            stopLoss = newSl;
-
-            TradeSignal.Action action = "up".equals(direction)
-                ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
-            return new TradeSignal(action,
-                String.format("ADD %s: probe +%.2f%% confirmed — new SL=%.2f TP=%.2f",
-                    direction.toUpperCase(), pnlPct * 100, stopLoss, takeProfit),
-                0.80, p.getAggPositionStrong(), stopLoss, takeProfit);
-        }
-
-        // 超时未确认（6根K线=1.5小时）→ 平仓
-        if (now - probeEntryTime > 5400000L) {
-            reset();
-            return noTrade("PROBE timeout (1.5h) — closing probe position");
-        }
-
-        // 浮亏超过止损 → 平仓
-        if (("up".equals(direction) && price <= stopLoss)
-            || ("down".equals(direction) && price >= stopLoss)) {
-            reset();
-            return noTrade("PROBE hit stop loss — closing");
-        }
-
-        return noTrade(String.format("PROBE %s: waiting confirmation (pnl=%.2f%%)",
-            direction, pnlPct * 100));
-    }
-
-    // ══════════════════════════════════════════════════════════════════════
-    // CONFIRMED → 回测引擎接管止盈止损，策略不再干预
-    // 实盘中这个状态不会被调用（人挂单管理）
+    // CONFIRMED → 实盘reset（人管止盈止损），回测由引擎管
     // ══════════════════════════════════════════════════════════════════════
     private TradeSignal evaluateExit(MarketData data) {
-        // 回测中不应该走到这里，由回测引擎直接管理止盈止损
-        // 但如果被调用了，返回 NO_TRADE 不影响持仓
-        return noTrade(String.format("CONFIRMED %s: held by engine (SL=%.2f TP=%.2f)",
-            direction, stopLoss, takeProfit));
+        reset();
+        return noTrade("CONFIRMED handed off — reset");
     }
 
-    /** 回测引擎平仓后调用，重置状态机 */
     public void reset() {
         state = State.IDLE;
         direction = null;
-        probeEntryPrice = 0;
-        probeEntryTime = 0;
+        entryPrice = 0;
         stopLoss = 0;
         takeProfit = 0;
+        entryAtr = 0;
+        highestSinceEntry = 0;
+        lowestSinceEntry = Double.MAX_VALUE;
     }
-
-    /** 供回测引擎读取当前止损（移动止损后会变） */
-    public double getStopLoss() { return stopLoss; }
 
     private TradeSignal noTrade(String reason) {
         return new TradeSignal(TradeSignal.Action.NO_TRADE, reason);

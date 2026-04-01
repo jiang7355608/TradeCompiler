@@ -40,6 +40,9 @@ public class MarketData {
     private final KLine   prev2Kline;           // 前两根K线（用于均值回归策略反转确认）
     private final double  ema5;                 // EMA短期值（用于趋势强度计算）
     private final double  ema20;                // EMA长期值
+    private final double  atr;                  // ATR（平均真实波幅，14周期）
+    private final double  ema50;                // EMA50（中期趋势）
+    private final String  trendEstablished;     // 趋势成立状态："up"/"down"/"none"
 
     public MarketData(boolean isRange, boolean volumeSpike, String breakout,
                       boolean continuation, double currentPrice,
@@ -48,7 +51,8 @@ public class MarketData {
                       String trendBias, boolean strongContinuation,
                       String breakout14, double rangeHigh14, double rangeLow14,
                       KLine prevKline, KLine prev2Kline,
-                      double ema5, double ema20) {
+                      double ema5, double ema20, double atr, double ema50,
+                      String trendEstablished) {
         this.isRange             = isRange;
         this.volumeSpike         = volumeSpike;
         this.breakout            = breakout;
@@ -68,6 +72,9 @@ public class MarketData {
         this.prev2Kline          = prev2Kline;
         this.ema5                = ema5;
         this.ema20               = ema20;
+        this.atr                 = atr;
+        this.ema50               = ema50;
+        this.trendEstablished    = trendEstablished;
     }
 
     public boolean isRange()                { return isRange; }
@@ -89,6 +96,9 @@ public class MarketData {
     public KLine   getPrev2Kline()          { return prev2Kline; }
     public double  getEma5()                { return ema5; }
     public double  getEma20()               { return ema20; }
+    public double  getAtr()                 { return atr; }
+    public double  getEma50()               { return ema50; }
+    public String  getTrendEstablished()    { return trendEstablished; }
 
     @Override
     public String toString() {

@@ -27,7 +27,7 @@ trading:
   email:
     enabled: true                        # 改为 true 开启邮件通知
     sender-email: jiangyuxuan7355608@gmail.com    # Gmail 发件地址
-    app-password: xxx     # Gmail 应用专用密码（非登录密码）
+    app-password: xxx      # Gmail 应用专用密码（非登录密码）
     receiver-email: jiangyuxuan7355608@gmail.com   # 收件地址
     min-confidence: 0.6                   # 触发邮件的最低置信度（0.0~1.0）
     cooldown-ms: 300000                   # 同方向信号冷却时间（毫秒），默认5分钟
@@ -145,6 +145,27 @@ trading:
     # 建议范围：1800000~5400000（30~90分钟），默认2700000
     agg-cooldown-ms: 2700000
 
+    # ── AggressiveStrategy 状态机参数 ──────────────────────────────────
+
+    # 确认阈值 = ATR × 此值（浮盈超过此值才加仓）
+    # 1.5 = 浮盈超过1.5个ATR才确认，过滤噪音
+    agg-confirm-atr-mult: 1.5
+
+    # 止损距离 = ATR × 此值
+    # 1.5 = 止损在1.5个ATR外，给价格足够呼吸空间
+    agg-sl-atr-mult: 1.5
+
+    # 止盈距离 = ATR × 此值
+    # 4.5 = 止盈在4.5个ATR外，盈亏比3:1
+    agg-tp-atr-mult: 4.5
+
+    # 试探仓超时（毫秒），3小时
+    agg-probe-timeout-ms: 10800000
+
+    # 趋势判定：EMA偏离 > ATR × 此值 才算趋势
+    # 0.5 = EMA5和EMA20差距超过0.5个ATR才开仓
+    agg-trend-atr-mult: 0.5
+
     # ── ConservativeStrategy 保守策略参数 ───────────────────────────────
 
     # 风险回报比（保守策略）
@@ -209,6 +230,14 @@ trading:
     # 值越大越宽松（允许更强趋势下做反转），越小越保守
     # 建议范围：0.001~0.005，默认0.002
     mr-trend-strength-limit: 0.002
+
+    # 人工定义大箱体上下沿（周/月级别支撑阻力位）
+    # 根据日线/周线图手动确定，修改后重启生效
+    # 也可通过 API 动态更新
+    mr-range-high: 73000
+    mr-range-low: 66500
+    # 接近上下沿的缓冲区（美元），价格进入此范围开始寻找入场信号
+    mr-entry-buffer: 500
 
   # ── 回测配置 ──────────────────────────────────────────────────────────
   backtest:
