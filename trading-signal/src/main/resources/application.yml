@@ -36,7 +36,7 @@ trading:
   email:
     enabled: true                        # 改为 true 开启邮件通知
     sender-email: jiangyuxuan7355608@gmail.com    # Gmail 发件地址
-    app-password: pusy hvba elpd dnby      # Gmail 应用专用密码（非登录密码）
+    app-password: xxx      # Gmail 应用专用密码（非登录密码）
     receiver-email: jiangyuxuan7355608@gmail.com   # 收件地址
     min-confidence: 0.6                   # 触发邮件的最低置信度（0.0~1.0）
     cooldown-ms: 300000                   # 同方向信号冷却时间（毫秒），默认5分钟
