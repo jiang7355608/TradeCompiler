@@ -4,9 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.trading.signal.client.OkxTradeClient;
 import com.trading.signal.config.TradingProperties;
 import com.trading.signal.model.TradeSignal;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
 /**
  * 交易执行器：将策略信号转化为 OKX 下单操作
@@ -31,11 +36,38 @@ public class TradeExecutor {
     private final EmailService emailService;
     private boolean leverageSet = false;
 
+    // NEW: 账户级永久熔断（Equity Kill Switch）
+    // initialBalance：程序启动时从交易所读取，作为风控基准
+    // isKilled：一旦置 true，程序生命周期内不可恢复，必须重启
+    private double  initialBalance = 0;
+    private boolean isKilled       = false;
+    private static final double KILL_THRESHOLD = 0.60; // 跌至初始资金60%触发
+
     public TradeExecutor(OkxTradeClient tradeClient, TradingProperties properties,
                          EmailService emailService) {
         this.tradeClient = tradeClient;
         this.properties  = properties;
         this.emailService = emailService;
+    }
+
+    // NEW: 程序启动后自动执行，从交易所读取当前余额作为初始基准
+    // 如果查询失败（网络/API问题），initialBalance=0，熔断不会误触发
+    // 但会打印警告，提示人工确认
+    @PostConstruct
+    public void init() {
+        if (!properties.getTradeApi().isEnabled()) return;
+        try {
+            initialBalance = tradeClient.getBalance();
+            if (initialBalance > 0) {
+        log.info("Equity Kill Switch 初始化: initialBalance={} USDT, 熔断线={} USDT",
+                    String.format("%.2f", initialBalance),
+                    String.format("%.2f", initialBalance * KILL_THRESHOLD));
+            } else {
+                log.warn("Equity Kill Switch: 初始余额查询失败，熔断保护未激活，请检查 API 配置");
+            }
+        } catch (Exception e) {
+            log.warn("Equity Kill Switch: 初始化失败 — {}", e.getMessage());
+        }
     }
 
     /**
@@ -65,6 +97,27 @@ public class TradeExecutor {
     public synchronized boolean execute(TradeSignal signal, double currentPrice) {
         TradingProperties.TradeApi cfg = properties.getTradeApi();
         if (!cfg.isEnabled()) return false;
+
+        // NEW: 永久熔断检查 — 已触发则拒绝一切新交易
+        if (isKilled) {
+            log.error("Equity Kill Switch 已触发，拒绝下单");
+            return false;
+        }
+
+        // NEW: 每次下单前检查当前余额是否触发熔断线
+        if (initialBalance > 0) {
+            try {
+                double currentBalance = tradeClient.getBalance();
+                if (currentBalance > 0 && currentBalance <= initialBalance * KILL_THRESHOLD) {
+                    triggerKillSwitch(currentBalance);
+                    return false;
+                }
+            } catch (Exception e) {
+                // 余额查询失败：保守处理，拒绝下单
+                log.error("Equity Kill Switch: 余额查询失败，拒绝下单以保护资金 — {}", e.getMessage());
+                return false;
+            }
+        }
 
         String reason = signal.getReason();
 
@@ -141,6 +194,12 @@ public class TradeExecutor {
         }
     }
 
+    /** 查询交易所是否有持仓（供外部判断策略状态是否需要 reset）*/
+    public boolean hasExchangePosition() {
+        double pos = queryPositionSize();
+        return !Double.isNaN(pos) && pos != 0;
+    }
+
     /** 不再需要内存状态重置 */
     public void resetPositionState() { /* no-op, 以交易所为准 */ }
 
@@ -178,6 +237,39 @@ public class TradeExecutor {
             log.error("下单失败: {}", result.toString());
         }
         return ok;
+    }
+
+    // NEW: 触发永久熔断，发送告警邮件，此后程序生命周期内不再交易
+    private void triggerKillSwitch(double currentBalance) {
+        isKilled = true;
+        double drawdownPct = (1.0 - currentBalance / initialBalance) * 100;
+        String time = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            .withZone(ZoneId.systemDefault()).format(Instant.now());
+
+        log.error("【紧急】Equity Kill Switch 触发！currentBalance={} initialBalance={} drawdown={}%",
+            String.format("%.2f", currentBalance),
+            String.format("%.2f", initialBalance),
+            String.format("%.1f", drawdownPct));
+
+        String subject = "【紧急】账户熔断触发 — 交易已永久停止";
+        String body = String.format(
+            "===== EQUITY KILL SWITCH =====\n\n" +
+            "触发时间  : %s\n"                    +
+            "当前余额  : %.2f USDT\n"             +
+            "初始余额  : %.2f USDT\n"             +
+            "跌幅      : -%.1f%%\n"               +
+            "熔断线    : %.0f%% (%.2f USDT)\n\n"  +
+            "所有新交易已永久停止。\n"             +
+            "请人工检查账户并重启程序以恢复交易。\n\n" +
+            "==============================",
+            time, currentBalance, initialBalance, drawdownPct,
+            KILL_THRESHOLD * 100, initialBalance * KILL_THRESHOLD);
+
+        try {
+            emailService.sendRawEmail(subject, body);
+        } catch (Exception e) {
+            log.error("熔断告警邮件发送失败: {}", e.getMessage());
+        }
     }
 
     private void sendTradeEmail(String type, TradeSignal signal, double price) {

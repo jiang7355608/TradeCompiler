@@ -120,7 +120,10 @@ public class SignalService {
             if (addOk) {
                 mr.confirmHandedOff();
             } else {
-                log.error("加仓下单失败，策略状态保持 CONFIRMED，不重置");
+                // 加仓失败（无论原因）一律 reset 回 IDLE
+                // 交易所侧的试探仓有止损单兜底，策略不需要继续跟踪
+                log.warn("加仓下单失败，策略 reset 回 IDLE，交易所止损单负责保护试探仓");
+                mr.reset();
             }
             return;
         }
@@ -128,6 +131,7 @@ public class SignalService {
         // ── 均值回归：试探仓止损/超时 or CONFIRMED 超时兜底 → 平仓 ─────
         if (tradeSignal.getAction() == TradeSignal.Action.NO_TRADE) {
             if (reason.startsWith("MR-PROBE timeout") || reason.startsWith("MR-PROBE hit")
+                    || reason.startsWith("MR-PROBE range invalidated")
                     || reason.startsWith("MR-CONFIRMED timeout")) {
                 if (strategy instanceof com.trading.signal.strategy.MeanReversionStrategy mr) {
                     boolean closeOk = tradeExecutor.closeProbe(mr.getDirection());

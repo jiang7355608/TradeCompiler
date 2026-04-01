@@ -86,6 +86,25 @@ public class MeanReversionStrategy implements Strategy {
 
         if (atr <= 0 || rangeSpan <= 0) return noTrade("Invalid ATR or range");
 
+        // NEW: breakout confirmation — 双K线确认真突破才禁止开仓（暂时注释，排查盈利下降原因）
+        // 单根K线收盘超出箱体（弱突破）：可能是假突破，不阻止开仓
+        // 连续两根K线收盘均超出（强突破）：箱体失效，禁止开仓
+        // 阈值统一用 0.3ATR，与 evaluateConfirmation 保持一致
+        KLine last = data.getLastKline();
+        KLine prev = data.getPrevKline();
+        /*
+        double breakoutThreshold = atr * 0.3;
+        boolean strongBreakoutUp = last.getClose() > rangeHigh + breakoutThreshold
+                                && prev.getClose() > rangeHigh + breakoutThreshold;
+        boolean strongBreakoutDn = last.getClose() < rangeLow  - breakoutThreshold
+                                && prev.getClose() < rangeLow  - breakoutThreshold;
+
+        if (strongBreakoutUp || strongBreakoutDn) {
+            return noTrade(String.format("Range invalidated (strong breakout 2 bars): price=%.0f [%.0f, %.0f]",
+                price, rangeLow, rangeHigh));
+        }
+        */
+
         // 止损距离：基于入场价的动态模型
         // - rangeSpan * 0.15：与箱体规模挂钩，箱体越大止损空间越大
         // - 2 * ATR：保证止损在正常波动范围之外，不被噪音打掉
@@ -93,9 +112,6 @@ public class MeanReversionStrategy implements Strategy {
         // 相比旧逻辑（rangeLow - rangeSpan*0.30），止损锚定入场价而非箱体边界，
         // 无论入场位置偏移多少，实际风险敞口始终可控
         double slDist = Math.max(rangeSpan * 0.15, atr * 2);
-
-        KLine last = data.getLastKline();
-        KLine prev = data.getPrevKline();
 
         // 下沿做多
         if (price <= rangeLow + buffer
@@ -142,6 +158,30 @@ public class MeanReversionStrategy implements Strategy {
     private TradeSignal evaluateConfirmation(MarketData data) {
         double price = data.getCurrentPrice();
         long   now   = data.getLastKline().getTimestamp();
+        double atr   = data.getAtr();
+
+        // NEW: breakout confirmation — 双K线确认真突破才 reset 平仓（暂时注释，排查盈利下降原因）
+        // 弱突破（单根K线）：仅记录日志，不影响加仓逻辑
+        // 强突破（连续两根K线）：箱体失效，reset 并触发平仓
+        double rangeHigh = p.getMrRangeHigh();
+        double rangeLow  = p.getMrRangeLow();
+        KLine last = data.getLastKline();
+        KLine prev = data.getPrevKline();
+        /*
+        double breakoutThreshold = atr * 0.3;
+        boolean weakBreakoutUp   = last.getClose() > rangeHigh + breakoutThreshold;
+        boolean strongBreakoutUp = weakBreakoutUp && prev.getClose() > rangeHigh + breakoutThreshold;
+        boolean weakBreakoutDn   = last.getClose() < rangeLow  - breakoutThreshold;
+        boolean strongBreakoutDn = weakBreakoutDn && prev.getClose() < rangeLow  - breakoutThreshold;
+
+        if (strongBreakoutUp || strongBreakoutDn) {
+            reset();
+            return noTrade(String.format(
+                "MR-PROBE range invalidated (strong breakout): price=%.0f [%.0f, %.0f] confirmed 2 bars — closing",
+                price, rangeLow, rangeHigh));
+        }
+        */
+        boolean weakBreakout = false; // 注释期间固定为 false，不影响日志输出
 
         double pnl = "up".equals(direction)
             ? price - probeEntryPrice : probeEntryPrice - price;
@@ -158,12 +198,26 @@ public class MeanReversionStrategy implements Strategy {
             state         = State.CONFIRMED;
             confirmedTime = now;  // 记录确认时间，供超时兜底使用
 
-            // 动态保本止损：入场价 + 箱体宽度×5%
-            double protectDist = rangeSpan * 0.05;
+            // FIX: 双因子保本止损模型
+            // 原逻辑 rangeSpan * 0.05 在 BTC 15m 高波动场景下经常小于单根 K 线振幅，
+            // 导致加仓后被正常回撤直接打掉（假洗）。
+            // 新逻辑取 rangeSpan*0.05 和 ATR*1.0 的较大值：
+            //   - rangeSpan*0.05 保证止损与箱体规模挂钩（最低保护距离）
+            //   - ATR*1.0 保证止损 ≥ 当前市场真实波动，不被噪音触发
+            double protectDist = Math.max(rangeSpan * 0.05, atr * 1.0);
+
             double newSl = "up".equals(direction)
-                ? probeEntryPrice + protectDist
-                : probeEntryPrice - protectDist;
-            stopLoss = newSl;
+                ? probeEntryPrice + protectDist   // 多头：止损在入场价上方（保本）
+                : probeEntryPrice - protectDist;  // 空头：止损在入场价下方（保本）
+
+            // FIX: 防止止损倒退（只允许止损向有利方向移动）
+            // 多头：新止损必须 >= 旧止损，否则保留旧止损（不扩大风险）
+            // 空头：新止损必须 <= 旧止损，否则保留旧止损（不扩大风险）
+            if ("up".equals(direction)) {
+                stopLoss = Math.max(newSl, stopLoss);
+            } else {
+                stopLoss = Math.min(newSl, stopLoss);
+            }
 
             TradeSignal.Action action = "up".equals(direction)
                 ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
@@ -186,8 +240,8 @@ public class MeanReversionStrategy implements Strategy {
             return noTrade("MR-PROBE hit stop loss — closing");
         }
 
-        return noTrade(String.format("MR-PROBE %s: pnl=%.0f waiting for +%.0f(25%%span)",
-            direction, pnl, confirmThreshold));
+        return noTrade(String.format("MR-PROBE %s: pnl=%.0f waiting for +%.0f(25%%span)%s",
+            direction, pnl, confirmThreshold, weakBreakout ? " [weak breakout — add blocked]" : ""));
     }
 
     // ══════════════════════════════════════════════════════════════════════
