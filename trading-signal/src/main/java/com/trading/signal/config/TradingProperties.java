@@ -135,6 +135,7 @@ public class TradingProperties {
         private double mrPosition           = 0.20;   // 仓位比例
         private long   mrCooldownMs         = 2700000; // 冷却期45分钟
         private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限
+        private long   mrConfirmedTimeoutMs = 21600000; // CONFIRMED 超时兜底（6小时）
         // 人工定义大箱体上下沿
         private double mrRangeHigh          = 73000;  // 上沿
         private double mrRangeLow           = 66500;  // 下沿
@@ -210,6 +211,8 @@ public class TradingProperties {
         public void   setMrCooldownMs(long v)       { this.mrCooldownMs = v; }
         public double getMrTrendStrengthLimit()      { return mrTrendStrengthLimit; }
         public void   setMrTrendStrengthLimit(double v) { this.mrTrendStrengthLimit = v; }
+        public long   getMrConfirmedTimeoutMs()      { return mrConfirmedTimeoutMs; }
+        public void   setMrConfirmedTimeoutMs(long v){ this.mrConfirmedTimeoutMs = v; }
         public double getMrRangeHigh()              { return mrRangeHigh; }
         public void   setMrRangeHigh(double v)      { this.mrRangeHigh = v; }
         public double getMrRangeLow()               { return mrRangeLow; }

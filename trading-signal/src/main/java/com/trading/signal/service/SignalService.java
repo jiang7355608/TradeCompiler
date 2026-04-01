@@ -125,9 +125,10 @@ public class SignalService {
             return;
         }
 
-        // ── 均值回归：试探仓止损/超时 → 平仓 ────────────────────────────
+        // ── 均值回归：试探仓止损/超时 or CONFIRMED 超时兜底 → 平仓 ─────
         if (tradeSignal.getAction() == TradeSignal.Action.NO_TRADE) {
-            if (reason.startsWith("MR-PROBE timeout") || reason.startsWith("MR-PROBE hit")) {
+            if (reason.startsWith("MR-PROBE timeout") || reason.startsWith("MR-PROBE hit")
+                    || reason.startsWith("MR-CONFIRMED timeout")) {
                 if (strategy instanceof com.trading.signal.strategy.MeanReversionStrategy mr) {
                     boolean closeOk = tradeExecutor.closeProbe(mr.getDirection());
                     if (!closeOk) {

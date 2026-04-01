@@ -32,6 +32,7 @@ public class MeanReversionStrategy implements Strategy {
     private long   probeEntryTime;
     private double stopLoss;
     private double takeProfit;
+    private long   confirmedTime = 0;  // 进入 CONFIRMED 状态的时间戳（用于超时兜底）
     private int    consecutiveLosses = 0;
     private long   circuitBreakerUntil = 0;
     private long   lastTradeTime = 0;  // 全局冷却（不分方向）
@@ -85,8 +86,13 @@ public class MeanReversionStrategy implements Strategy {
 
         if (atr <= 0 || rangeSpan <= 0) return noTrade("Invalid ATR or range");
 
-        // 动态止损距离：箱体宽度×30%，但不小于2×ATR
-        double slDist = Math.max(rangeSpan * 0.30, atr * 2);
+        // 止损距离：基于入场价的动态模型
+        // - rangeSpan * 0.15：与箱体规模挂钩，箱体越大止损空间越大
+        // - 2 * ATR：保证止损在正常波动范围之外，不被噪音打掉
+        // - 取两者较大值：在低波动窄箱体时用 ATR 兜底，高波动宽箱体时用比例控制
+        // 相比旧逻辑（rangeLow - rangeSpan*0.30），止损锚定入场价而非箱体边界，
+        // 无论入场位置偏移多少，实际风险敞口始终可控
+        double slDist = Math.max(rangeSpan * 0.15, atr * 2);
 
         KLine last = data.getLastKline();
         KLine prev = data.getPrevKline();
@@ -98,7 +104,7 @@ public class MeanReversionStrategy implements Strategy {
             direction       = "up";
             probeEntryPrice = price;
             probeEntryTime  = currentTs;
-            stopLoss        = rangeLow - slDist;
+            stopLoss        = price - slDist;  // 止损 = 入场价 - 止损距离
             takeProfit      = rangeMid;
             state           = State.PROBE;
             lastTradeTime   = currentTs;
@@ -116,7 +122,7 @@ public class MeanReversionStrategy implements Strategy {
             direction       = "down";
             probeEntryPrice = price;
             probeEntryTime  = currentTs;
-            stopLoss        = rangeHigh + slDist;
+            stopLoss        = price + slDist;  // 止损 = 入场价 + 止损距离
             takeProfit      = rangeMid;
             state           = State.PROBE;
             lastTradeTime   = currentTs;
@@ -149,7 +155,8 @@ public class MeanReversionStrategy implements Strategy {
         boolean timeOk = (now - probeEntryTime) >= 2700000L;
 
         if (pnlOk && timeOk) {
-            state = State.CONFIRMED;
+            state         = State.CONFIRMED;
+            confirmedTime = now;  // 记录确认时间，供超时兜底使用
 
             // 动态保本止损：入场价 + 箱体宽度×5%
             double protectDist = rangeSpan * 0.05;
@@ -184,14 +191,30 @@ public class MeanReversionStrategy implements Strategy {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // CONFIRMED → 保留状态供API查询，不立即reset
-    // 实盘：API下单后调用 confirmHandedOff() 手动reset
-    // 回测：引擎平仓后调用 reset()
+    // CONFIRMED → 等待 confirmHandedOff() 被调用后 reset
+    //
+    // 正常路径：加仓下单成功 → SignalService 调用 confirmHandedOff() → IDLE
+    //
+    // 兜底路径（fail-safe）：
+    //   如果 API 失败、服务异常、confirmHandedOff 未被调用，
+    //   超过 mrConfirmedTimeoutMs（默认6小时）后自动触发平仓信号。
+    //   这是最后一道防线，防止加仓仓位在无止损状态下长期裸奔。
     // ══════════════════════════════════════════════════════════════════════
     private TradeSignal evaluateExit(MarketData data) {
-        // 不自动reset，保留持仓信息
-        // 返回NO_TRADE让调用方知道当前有确认仓在场
-        return noTrade(String.format("CONFIRMED %s: SL=%.0f TP=%.0f — awaiting API/manual",
+        long now = data.getLastKline().getTimestamp();
+
+        // ── fail-safe：CONFIRMED 超时兜底 ────────────────────────────────
+        // 正常情况下 confirmHandedOff() 会在下单成功后立即调用，不会走到这里。
+        // 只有 API 失败或系统异常时才会超时触发，此时强制 reset 并发出平仓信号。
+        if (confirmedTime > 0 && (now - confirmedTime) > p.getMrConfirmedTimeoutMs()) {
+            reset();
+            return noTrade(String.format(
+                "MR-CONFIRMED timeout %.0fh — force closing to prevent unprotected position",
+                p.getMrConfirmedTimeoutMs() / 3600000.0));
+        }
+
+        // 正常等待：加仓下单尚未确认，保持 CONFIRMED 状态
+        return noTrade(String.format("CONFIRMED %s: SL=%.0f TP=%.0f — awaiting add order confirmation",
             direction, stopLoss, takeProfit));
     }
 
@@ -207,6 +230,7 @@ public class MeanReversionStrategy implements Strategy {
         direction       = null;
         probeEntryPrice = 0;
         probeEntryTime  = 0;
+        confirmedTime   = 0;
         stopLoss        = 0;
         takeProfit      = 0;
     }
