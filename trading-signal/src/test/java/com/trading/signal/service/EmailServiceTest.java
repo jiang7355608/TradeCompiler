@@ -30,7 +30,6 @@ class EmailServiceTest {
         properties = new TradingProperties();
         TradingProperties.Email email = new TradingProperties.Email();
         email.setEnabled(false);
-        email.setMinConfidence(0.6);
         email.setCooldownMs(300000); // 5分钟冷却
         email.setSenderEmail("test@test.com");
         email.setReceiverEmail("test@test.com");
@@ -155,21 +154,11 @@ class EmailServiceTest {
     }
 
     @Test
-    void filter_lowConfidence_doesNotThrow() {
-        // minConfidence=0.6, signal=0.3 → 不发送
+    void filter_anyConfidence_doesNotThrow() {
+        // 置信度不再过滤邮件，所有有效信号都发送（置信度影响仓位大小）
         TradeSignal low = longSignal("test", 0.3);
         assertDoesNotThrow(() -> emailService.sendSignalEmail(low, 70000));
-    }
-
-    @Test
-    void filter_exactMinConfidence_doesNotThrow() {
-        // 刚好等于阈值，应该不发（< 不是 <=）
-        TradeSignal exact = longSignal("test", 0.6);
-        assertDoesNotThrow(() -> emailService.sendSignalEmail(exact, 70000));
-    }
-
-    @Test
-    void filter_highConfidence_doesNotThrow() {
+        
         TradeSignal high = longSignal("test", 0.8);
         assertDoesNotThrow(() -> emailService.sendSignalEmail(high, 70000));
     }

@@ -18,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 触发条件（由调用方保证）：
  *   signal.action != NO_TRADE
- *   signal.confidence >= trading.email.min-confidence（默认 0.6）
  *
  * 防轰炸机制：
  *   同方向信号（LONG / SHORT）在 cooldownMs 内只发送一次
@@ -62,12 +61,6 @@ public class EmailService {
 
         // NO_TRADE 不发送
         if (signal.getAction() == TradeSignal.Action.NO_TRADE) {
-            return;
-        }
-
-        // 置信度不足，不发送
-        if (signal.getConfidence() < cfg.getMinConfidence()) {
-            log.debug("置信度 {} 低于阈值 {}，跳过邮件", signal.getConfidence(), cfg.getMinConfidence());
             return;
         }
 
@@ -165,7 +158,18 @@ public class EmailService {
         props.put("mail.smtp.host",            SMTP_HOST);
         props.put("mail.smtp.port",            SMTP_PORT);
         props.put("mail.smtp.ssl.trust",       SMTP_HOST);
+        // 1. 强制要求 TLS 握手（避免谷歌新版安全策略拦截）
+        props.put("mail.smtp.starttls.required", "true");
 
+        // 2. 强行指定走 Socks5 代理！（这是解决 Connection reset 的核心）
+        // 注意端口换成了你刚才测通的 7897
+        props.put("mail.smtp.socks.host", "127.0.0.1");
+        props.put("mail.smtp.socks.port", "7897");
+
+        // 3. 救命的超时设置（防止梯子卡顿导致你的量化主线程被卡死）
+        props.put("mail.smtp.connectiontimeout", "5000");
+        props.put("mail.smtp.timeout", "5000");
+        props.put("mail.smtp.writetimeout", "5000");
         Session session = Session.getInstance(props, new Authenticator() {
             @Override
             protected PasswordAuthentication getPasswordAuthentication() {
@@ -198,26 +202,57 @@ public class EmailService {
     }
 
     /**
-     * 发送试探仓作废通知
+     * 发送试探仓平仓通知（区分不同原因）
      */
     public void sendCancelEmail(String reason, double currentPrice) {
         TradingProperties.Email cfg = properties.getEmail();
         if (!cfg.isEnabled()) return;
 
-        String subject = String.format("[CANCEL] %s 试探仓作废",
-            properties.getOkx().getInstId().toUpperCase());
+        // 根据原因判断平仓类型
+        String title;
+        String explanation;
+        
+        if (reason.contains("timeout")) {
+            title = "试探仓超时平仓";
+            explanation = "试探仓持仓超过3小时未触发加仓条件，已自动平仓。\n" +
+                         "可能原因：\n" +
+                         "- 浮盈未达到箱体宽度的25%\n" +
+                         "- 持仓时间不足45分钟\n" +
+                         "- 价格在箱体内震荡，未形成明确方向";
+        } else if (reason.contains("hit stop loss")) {
+            title = "试探仓止损平仓";
+            explanation = "价格触及策略监控止损线，已自动平仓。\n" +
+                         "止损由策略每1分钟检查一次。";
+        } else if (reason.contains("range invalidated")) {
+            title = "箱体失效平仓";
+            explanation = "价格强势突破箱体（连续两根K线确认），\n" +
+                         "箱体震荡结构失效，已自动平仓。";
+        } else if (reason.contains("CONFIRMED timeout")) {
+            title = "加仓超时平仓";
+            explanation = "加仓信号发出后6小时未确认，\n" +
+                         "可能是API异常或系统故障，已强制平仓。";
+        } else {
+            title = "试探仓平仓";
+            explanation = "策略触发平仓条件。";
+        }
+
+        String subject = String.format("[%s] %s", title, properties.getOkx().getInstId().toUpperCase());
         String body = String.format(
-            "===== PROBE CANCELLED =====\n\n" +
-            "Reason : %s\n" +
-            "Price  : %.2f\n\n" +
-            "请手动平掉试探仓位\n" +
+            "===== %s =====\n\n" +
+            "当前价格: %.2f\n" +
+            "原因    : %s\n\n" +
+            "【说明】\n%s\n\n" +
+            "【操作】\n" +
+            "系统已自动调用平仓接口。\n" +
+            "请登录交易所确认持仓已平仓。\n" +
+            "如平仓失败，请立即手动平仓。\n\n" +
             "===========================",
-            reason, currentPrice);
+            title, currentPrice, reason, explanation);
 
         try {
             send(cfg, subject, body);
         } catch (Exception e) {
-            log.error("作废通知邮件发送失败: {}", e.getMessage());
+            log.error("平仓通知邮件发送失败: {}", e.getMessage());
         }
     }
 }

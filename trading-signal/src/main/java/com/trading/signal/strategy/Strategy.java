@@ -13,7 +13,12 @@ public interface Strategy {
     /** 根据市场数据生成交易信号 */
     TradeSignal generateSignal(MarketData data);
 
-    /** 根据市场数据 + 大周期箱体生成交易信号（默认忽略大周期） */
+    /** 
+     * 根据市场数据 + 大周期箱体生成交易信号
+     * 
+     * 默认实现：忽略 HtfRange，直接调用单参数版本
+     * 均值回归策略会重写此方法，使用动态箱体
+     */
     default TradeSignal generateSignal(MarketData data, HtfRange htfRange) {
         return generateSignal(data);
     }

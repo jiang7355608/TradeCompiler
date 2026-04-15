@@ -7,6 +7,7 @@ import com.trading.signal.model.TradeSignal;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+
 /**
  * MeanReversionStrategy — 人工大箱体 + 试探加仓
  *
@@ -54,12 +55,45 @@ public class MeanReversionStrategy implements Strategy {
     public synchronized double getTakeProfit()  { return takeProfit; }
     public synchronized String getDirection()   { return direction; }
     public synchronized boolean hasPosition()   { return state != State.IDLE; }
+    public TradingProperties.StrategyParams getParams() { return p; }
 
     @Override
     public synchronized TradeSignal generateSignal(MarketData data) {
+        // 不应该直接调用此方法，均值回归策略必须传入 HtfRange
+        return noTrade("Missing HtfRange — mean reversion requires dynamic box analysis");
+    }
+
+    @Override
+    public synchronized TradeSignal generateSignal(MarketData data, com.trading.signal.model.HtfRange htfRange) {
+        // 手动箱体优先（配置不为0时使用手动箱体）
+        double rangeHigh, rangeLow;
+        if (p.getMrRangeHigh() > 0 && p.getMrRangeLow() > 0) {
+            // 使用手动箱体
+            rangeHigh = p.getMrRangeHigh();
+            rangeLow = p.getMrRangeLow();
+        } else {
+            // 使用动态箱体
+            if (!htfRange.isRange()) {
+                return noTrade(String.format("HTF not in range (trend=%s) — mean reversion disabled",
+                    htfRange.getTrendBias()));
+            }
+            rangeHigh = htfRange.getRangeHigh();
+            rangeLow = htfRange.getRangeLow();
+        }
+        
+        double rangeSpan = rangeHigh - rangeLow;
+
+        // 箱体宽度检查：太窄的箱体不适合做均值回归（容易被噪音触发）
+        // 最小宽度：当前价格的1%（BTC 67000时至少670美元）
+        double minSpan = data.getCurrentPrice() * 0.01;
+        if (rangeSpan < minSpan) {
+            return noTrade(String.format("HTF range too narrow: %.0f < %.0f (1%% of price) — risk of noise",
+                rangeSpan, minSpan));
+        }
+
         return switch (state) {
-            case IDLE      -> evaluateEntry(data);
-            case PROBE     -> evaluateConfirmation(data);
+            case IDLE      -> evaluateEntry(data, rangeHigh, rangeLow, rangeSpan);
+            case PROBE     -> evaluateConfirmation(data, rangeHigh, rangeLow, rangeSpan);
             case CONFIRMED -> evaluateExit(data);
         };
     }
@@ -67,7 +101,7 @@ public class MeanReversionStrategy implements Strategy {
     // ══════════════════════════════════════════════════════════════════════
     // IDLE → 寻找上下沿入场机会
     // ══════════════════════════════════════════════════════════════════════
-    private TradeSignal evaluateEntry(MarketData data) {
+    private TradeSignal evaluateEntry(MarketData data, double rangeHigh, double rangeLow, double rangeSpan) {
         long currentTs = data.getLastKline().getTimestamp();
 
         // 熔断
@@ -78,10 +112,7 @@ public class MeanReversionStrategy implements Strategy {
 
         double price     = data.getCurrentPrice();
         double atr       = data.getAtr();
-        double rangeHigh = p.getMrRangeHigh();
-        double rangeLow  = p.getMrRangeLow();
         double buffer    = p.getMrEntryBuffer();
-        double rangeSpan = rangeHigh - rangeLow;
         double rangeMid  = (rangeHigh + rangeLow) / 2.0;
 
         if (atr <= 0 || rangeSpan <= 0) return noTrade("Invalid ATR or range");
@@ -106,12 +137,11 @@ public class MeanReversionStrategy implements Strategy {
         */
 
         // 止损距离：基于入场价的动态模型
-        // - rangeSpan * 0.15：与箱体规模挂钩，箱体越大止损空间越大
-        // - 2 * ATR：保证止损在正常波动范围之外，不被噪音打掉
+        // - rangeSpan * 0.08：与箱体规模挂钩，箱体越大止损空间越大
+        // - 1.5 * ATR：保证止损在正常波动范围之外，不被噪音打掉
         // - 取两者较大值：在低波动窄箱体时用 ATR 兜底，高波动宽箱体时用比例控制
-        // 相比旧逻辑（rangeLow - rangeSpan*0.30），止损锚定入场价而非箱体边界，
-        // 无论入场位置偏移多少，实际风险敞口始终可控
-        double slDist = Math.max(rangeSpan * 0.15, atr * 2);
+        // 相比旧逻辑（0.15 + 2*ATR），新逻辑更保守，减少单次止损亏损
+        double slDist = Math.max(rangeSpan * 0.08, atr * 1.5);
 
         // 下沿做多
         if (price <= rangeLow + buffer
@@ -120,15 +150,16 @@ public class MeanReversionStrategy implements Strategy {
             direction       = "up";
             probeEntryPrice = price;
             probeEntryTime  = currentTs;
-            stopLoss        = price - slDist;  // 止损 = 入场价 - 止损距离
+            stopLoss        = price - slDist;  // 止损 = 入场价 - 止损距离（策略监控用）
             takeProfit      = rangeMid;
             state           = State.PROBE;
             lastTradeTime   = currentTs;
 
+            // 试探仓不带止盈止损（策略监控保护，3小时超时自动平仓）
             return new TradeSignal(TradeSignal.Action.LONG,
-                String.format("MR-PROBE LONG: price=%.0f near lower %.0f SL=%.0f TP=%.0f",
-                    price, rangeLow, stopLoss, takeProfit),
-                0.60, 0.10, stopLoss, takeProfit);
+                String.format("MR-PROBE LONG: price=%.0f near lower %.0f (no exchange SL, strategy monitors %.1fh)",
+                    price, rangeLow, p.getMrProbeTimeoutMs() / 3600000.0),
+                0.60, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
         }
 
         // 上沿做空
@@ -138,15 +169,16 @@ public class MeanReversionStrategy implements Strategy {
             direction       = "down";
             probeEntryPrice = price;
             probeEntryTime  = currentTs;
-            stopLoss        = price + slDist;  // 止损 = 入场价 + 止损距离
+            stopLoss        = price + slDist;  // 止损 = 入场价 + 止损距离（策略监控用）
             takeProfit      = rangeMid;
             state           = State.PROBE;
             lastTradeTime   = currentTs;
 
+            // 试探仓不带止盈止损（策略监控保护，3小时超时自动平仓）
             return new TradeSignal(TradeSignal.Action.SHORT,
-                String.format("MR-PROBE SHORT: price=%.0f near upper %.0f SL=%.0f TP=%.0f",
-                    price, rangeHigh, stopLoss, takeProfit),
-                0.60, 0.10, stopLoss, takeProfit);
+                String.format("MR-PROBE SHORT: price=%.0f near upper %.0f (no exchange SL, strategy monitors %.1fh)",
+                    price, rangeHigh, p.getMrProbeTimeoutMs() / 3600000.0),
+                0.60, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
         }
 
         return noTrade(String.format("Price %.0f in mid-range (%.0f - %.0f)", price, rangeLow, rangeHigh));
@@ -155,7 +187,7 @@ public class MeanReversionStrategy implements Strategy {
     // ══════════════════════════════════════════════════════════════════════
     // PROBE → 确认加仓 or 止损/超时
     // ══════════════════════════════════════════════════════════════════════
-    private TradeSignal evaluateConfirmation(MarketData data) {
+    private TradeSignal evaluateConfirmation(MarketData data, double rangeHigh, double rangeLow, double rangeSpan) {
         double price = data.getCurrentPrice();
         long   now   = data.getLastKline().getTimestamp();
         double atr   = data.getAtr();
@@ -163,8 +195,6 @@ public class MeanReversionStrategy implements Strategy {
         // NEW: breakout confirmation — 双K线确认真突破才 reset 平仓（暂时注释，排查盈利下降原因）
         // 弱突破（单根K线）：仅记录日志，不影响加仓逻辑
         // 强突破（连续两根K线）：箱体失效，reset 并触发平仓
-        double rangeHigh = p.getMrRangeHigh();
-        double rangeLow  = p.getMrRangeLow();
         KLine last = data.getLastKline();
         KLine prev = data.getPrevKline();
         /*
@@ -186,9 +216,8 @@ public class MeanReversionStrategy implements Strategy {
         double pnl = "up".equals(direction)
             ? price - probeEntryPrice : probeEntryPrice - price;
 
-        // 动态确认阈值：箱体宽度×25%
-        double rangeSpan = p.getMrRangeHigh() - p.getMrRangeLow();
-        double confirmThreshold = rangeSpan * 0.25;
+        // 动态确认阈值：箱体宽度×15%（从25%降低，加快加仓速度）
+        double confirmThreshold = rangeSpan * 0.15;
 
         // 浮盈超过阈值 + 持仓至少45分钟
         boolean pnlOk  = pnl > confirmThreshold;
@@ -221,16 +250,19 @@ public class MeanReversionStrategy implements Strategy {
 
             TradeSignal.Action action = "up".equals(direction)
                 ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
+            
+            // 加仓带止盈止损（attachAlgoOrds 原子绑定整仓）
             return new TradeSignal(action,
-                String.format("MR-ADD %s: pnl=+%.0f > %.0f(25%%span) held>45min SL=%.0f TP=%.0f",
+                String.format("MR-ADD %s: pnl=+%.0f > %.0f(15%%span) held>45min — whole position SL=%.0f TP=%.0f",
                     direction.toUpperCase(), pnl, confirmThreshold, stopLoss, takeProfit),
                 0.85, 0.30, stopLoss, takeProfit);
         }
 
-        // 超时（24小时）
-        if (now - probeEntryTime > 86400000L) {
+        // 超时（3小时）→ 触发平仓
+        if (now - probeEntryTime > p.getMrProbeTimeoutMs()) {
             reset();
-            return noTrade("MR-PROBE timeout 24h — closing");
+            return noTrade(String.format("MR-PROBE timeout %.1fh — closing",
+                p.getMrProbeTimeoutMs() / 3600000.0));
         }
 
         // 止损
@@ -240,7 +272,7 @@ public class MeanReversionStrategy implements Strategy {
             return noTrade("MR-PROBE hit stop loss — closing");
         }
 
-        return noTrade(String.format("MR-PROBE %s: pnl=%.0f waiting for +%.0f(25%%span)%s",
+        return noTrade(String.format("MR-PROBE %s: pnl=%.0f waiting for +%.0f(15%%span)%s",
             direction, pnl, confirmThreshold, weakBreakout ? " [weak breakout — add blocked]" : ""));
     }
 

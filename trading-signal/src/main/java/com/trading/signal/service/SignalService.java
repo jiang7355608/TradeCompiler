@@ -138,16 +138,80 @@ public class SignalService {
                     if (!closeOk) {
                         log.error("【警告】试探仓平仓失败，请立即手动处理！原因: {}", reason);
                         emailService.sendCancelEmail("【紧急】平仓失败，请立即手动处理: " + reason, currentPrice);
+                        if (!tradeExecutor.hasExchangePosition()) {
+                            log.warn("交易所确认无持仓，策略状态已 reset，不再重复发送邮件");
+                        }
                         return;
                     }
+                    // 平仓成功，发送邮件（所有平仓都通知）
+                    emailService.sendCancelEmail(reason, currentPrice);
                 }
-                emailService.sendCancelEmail(reason, currentPrice);
             }
             return;
         }
 
         // ── 通用开仓信号 ──────────────────────────────────────────────────
         tradeExecutor.execute(tradeSignal, currentPrice);
+    }
+
+    /**
+     * 止损监控任务（每1分钟执行一次）
+     * 
+     * 专门用于监控试探仓止损，不进行完整的策略分析。
+     * 只查询当前价格，检查是否触及止损线。
+     * 
+     * 为什么需要独立任务？
+     * - 主任务每15分钟执行一次（对齐K线周期）
+     * - 试探仓没有交易所止损，需要更频繁的监控
+     * - 1分钟检查一次可以及时止损，避免损失扩大
+     */
+    @Scheduled(cron = "0 * * * * *")  // 每分钟整点执行
+    public void monitorStopLoss() {
+        Strategy strategy = strategyRouter.current();
+        
+        // 只有均值回归策略需要止损监控
+        if (!(strategy instanceof com.trading.signal.strategy.MeanReversionStrategy mr)) {
+            return;
+        }
+        
+        // 只有 PROBE 状态需要监控（IDLE 无持仓，CONFIRMED 有交易所止损）
+        if (mr.getState() != com.trading.signal.strategy.MeanReversionStrategy.State.PROBE) {
+            return;
+        }
+        
+        try {
+            // 查询当前价格（使用1分钟K线的最新收盘价）
+            TradingProperties.Okx okxCfg = properties.getOkx();
+            List<KLine> klines1m = okxClient.fetchCandles(okxCfg.getInstId(), "1m", 1);
+            if (klines1m.isEmpty()) return;
+            
+            double currentPrice = klines1m.get(0).getClose();
+            double stopLoss = mr.getStopLoss();
+            String direction = mr.getDirection();
+            
+            // 检查是否触及止损
+            boolean hitStopLoss = ("up".equals(direction) && currentPrice <= stopLoss)
+                               || ("down".equals(direction) && currentPrice >= stopLoss);
+            
+            if (hitStopLoss) {
+                log.warn("止损监控: 价格={} 触及止损={} 方向={}", currentPrice, stopLoss, direction);
+                
+                // 调用策略的 reset（与主任务逻辑一致）
+                mr.reset();
+                
+                // 平仓
+                boolean closeOk = tradeExecutor.closeProbe(direction);
+                if (!closeOk) {
+                    log.error("【警告】止损监控平仓失败，请立即手动处理！");
+                    emailService.sendCancelEmail("【紧急】止损监控平仓失败，请立即手动处理", currentPrice);
+                } else {
+                    // 发送止损平仓邮件
+                    emailService.sendCancelEmail("MR-PROBE hit stop loss — closing", currentPrice);
+                }
+            }
+        } catch (Exception e) {
+            log.error("止损监控执行出错: {}", e.getMessage(), e);
+        }
     }
 
     /**

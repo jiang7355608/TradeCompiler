@@ -55,7 +55,14 @@ public class BacktestRunner {
         }
 
         // ── Step 2: 使用默认参数（与 application.yml 默认值一致）──────────
+        TradingProperties props = new TradingProperties();
         TradingProperties.StrategyParams params = new TradingProperties.StrategyParams();
+        props.setParams(params);
+        TradingProperties.Backtest backtestCfg = new TradingProperties.Backtest();
+        backtestCfg.setInitialCapital(INITIAL_CAPITAL);
+        backtestCfg.setLeverage(LEVERAGE);
+        props.setBacktest(backtestCfg);
+        
         BacktestEngine engine = new BacktestEngine(INITIAL_CAPITAL, LEVERAGE);
 
         // ── 激进策略回测 ──────────────────────────────────────────────────
@@ -68,9 +75,10 @@ public class BacktestRunner {
         BacktestResult conResult = engine.run(CSV_FILE, new ConservativeStrategy(params));
         conResult.printSummary("Conservative Strategy");
 
-        // ── 均值回归策略回测 ──────────────────────────────────────────────
+        // ── 均值回归策略回测（使用新引擎）──────────────────────────────────
         System.out.println("\n── Step 2c: 均值回归策略回测 ─────────────────────────");
-        BacktestResult mrResult = engine.run(CSV_FILE, new MeanReversionStrategy(params));
+        MeanReversionBacktestEngine mrEngine = new MeanReversionBacktestEngine(props);
+        BacktestResult mrResult = mrEngine.run(CSV_FILE, new MeanReversionStrategy(params));
         mrResult.printSummary("Mean Reversion Strategy");
 
         // ── Step 3: 对比总结 ──────────────────────────────────────────────

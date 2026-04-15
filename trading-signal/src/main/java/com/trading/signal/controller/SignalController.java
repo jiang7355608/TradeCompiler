@@ -1,13 +1,16 @@
 package com.trading.signal.controller;
 
 import com.trading.signal.backtest.BacktestEngine;
+import com.trading.signal.backtest.MeanReversionBacktestEngine;
 import com.trading.signal.backtest.BacktestResult;
 import com.trading.signal.backtest.BacktestScheduler;
 import com.trading.signal.backtest.ParameterOptimizer;
 import com.trading.signal.config.TradingProperties;
 import com.trading.signal.model.KLine;
 import com.trading.signal.model.TradeSignal;
+import com.trading.signal.service.EmailService;
 import com.trading.signal.service.SignalService;
+import com.trading.signal.strategy.MeanReversionStrategy;
 import com.trading.signal.strategy.Strategy;
 import com.trading.signal.strategy.StrategyRouter;
 import org.springframework.http.ResponseEntity;
@@ -38,16 +41,20 @@ public class SignalController {
     private final BacktestScheduler  backtestScheduler;
     private final ParameterOptimizer parameterOptimizer;
     private final TradingProperties  properties;
+    private final EmailService       emailService;
+
 
     public SignalController(SignalService signalService, StrategyRouter strategyRouter,
                             BacktestScheduler backtestScheduler,
                             ParameterOptimizer parameterOptimizer,
-                            TradingProperties properties) {
+                            TradingProperties properties,
+                            EmailService emailService) {
         this.signalService      = signalService;
         this.strategyRouter     = strategyRouter;
         this.backtestScheduler  = backtestScheduler;
         this.parameterOptimizer = parameterOptimizer;
         this.properties         = properties;
+        this.emailService       = emailService;
     }
 
     @GetMapping("/signal/run")
@@ -138,12 +145,21 @@ public class SignalController {
         long endMs   = endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
 
         String csvFile = ensureCsvData(startDate, endDate, startMs, endMs);
-        BacktestEngine engine = new BacktestEngine(properties);
-        List<KLine> allKlines = engine.loadCsv(csvFile);
-
+        
         String strategyName = strategy != null ? strategy : properties.getStrategy();
         Strategy strat = strategyRouter.getStrategy(strategyName);
-        BacktestResult result = engine.run(allKlines, strat, startMs, endMs);
+        
+        // 均值回归策略使用新引擎
+        BacktestResult result;
+        if ("mean-reversion".equals(strategyName)) {
+            MeanReversionBacktestEngine mrEngine = new MeanReversionBacktestEngine(properties);
+            List<KLine> allKlines = mrEngine.loadCsv(csvFile);
+            result = mrEngine.run(allKlines, (MeanReversionStrategy) strat);
+        } else {
+            BacktestEngine engine = new BacktestEngine(properties);
+            List<KLine> allKlines = engine.loadCsv(csvFile);
+            result = engine.run(allKlines, strat, startMs, endMs);
+        }
 
         // 构建邮件
         StringBuilder body = new StringBuilder();
@@ -199,38 +215,11 @@ public class SignalController {
             }
         }
 
-        // 发邮件
+        // 发邮件（复用 EmailService）
         TradingProperties.Email emailCfg = properties.getEmail();
         if (emailCfg.isEnabled()) {
-            sendBacktestEmail(emailCfg,
-                String.format("[分段回测] %s %s→%s", strategyName, start, end),
-                body.toString());
-        }
-    }
-
-    private void sendBacktestEmail(TradingProperties.Email cfg, String subject, String body) {
-        try {
-            java.util.Properties props = new java.util.Properties();
-            props.put("mail.smtp.auth", "true");
-            props.put("mail.smtp.starttls.enable", "true");
-            props.put("mail.smtp.host", "smtp.gmail.com");
-            props.put("mail.smtp.port", "587");
-            props.put("mail.smtp.ssl.trust", "smtp.gmail.com");
-            jakarta.mail.Session session = jakarta.mail.Session.getInstance(props,
-                new jakarta.mail.Authenticator() {
-                    protected jakarta.mail.PasswordAuthentication getPasswordAuthentication() {
-                        return new jakarta.mail.PasswordAuthentication(cfg.getSenderEmail(), cfg.getAppPassword());
-                    }
-                });
-            jakarta.mail.Message msg = new jakarta.mail.internet.MimeMessage(session);
-            msg.setFrom(new jakarta.mail.internet.InternetAddress(cfg.getSenderEmail()));
-            msg.setRecipients(jakarta.mail.Message.RecipientType.TO,
-                jakarta.mail.internet.InternetAddress.parse(cfg.getReceiverEmail()));
-            msg.setSubject(subject);
-            msg.setText(body);
-            jakarta.mail.Transport.send(msg);
-        } catch (Exception e) {
-            e.printStackTrace();
+            String subject = String.format("[分段回测] %s %s→%s", strategyName.toUpperCase(), start, end);
+            emailService.sendRawEmail(subject, body.toString());
         }
     }
 

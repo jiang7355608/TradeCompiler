@@ -76,7 +76,6 @@ public class TradingProperties {
         private String  appPassword   = "";
         private String  receiverEmail = "";
         private boolean enabled       = false;
-        private double  minConfidence = 0.6;
         private long    cooldownMs    = 300000;
 
         public String  getSenderEmail()          { return senderEmail; }
@@ -87,8 +86,6 @@ public class TradingProperties {
         public void    setReceiverEmail(String v){ this.receiverEmail = v; }
         public boolean isEnabled()               { return enabled; }
         public void    setEnabled(boolean v)     { this.enabled = v; }
-        public double  getMinConfidence()        { return minConfidence; }
-        public void    setMinConfidence(double v){ this.minConfidence = v; }
         public long    getCooldownMs()           { return cooldownMs; }
         public void    setCooldownMs(long v)     { this.cooldownMs = v; }
     }
@@ -135,11 +132,11 @@ public class TradingProperties {
         private double mrPosition           = 0.20;   // 仓位比例
         private long   mrCooldownMs         = 2700000; // 冷却期45分钟
         private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限
+        private long   mrProbeTimeoutMs     = 10800000; // 试探仓超时3小时
         private long   mrConfirmedTimeoutMs = 21600000; // CONFIRMED 超时兜底（6小时）
-        // 人工定义大箱体上下沿
-        private double mrRangeHigh          = 73000;  // 上沿
-        private double mrRangeLow           = 66500;  // 下沿
         private double mrEntryBuffer        = 500;    // 接近边沿的缓冲区（美元）
+        private double mrRangeHigh          = 0;      // 手动箱体上沿（0=使用动态箱体）
+        private double mrRangeLow           = 0;      // 手动箱体下沿（0=使用动态箱体）
 
         public int    getRangeWindow()              { return rangeWindow; }
         public void   setRangeWindow(int v)         { this.rangeWindow = v; }
@@ -211,14 +208,16 @@ public class TradingProperties {
         public void   setMrCooldownMs(long v)       { this.mrCooldownMs = v; }
         public double getMrTrendStrengthLimit()      { return mrTrendStrengthLimit; }
         public void   setMrTrendStrengthLimit(double v) { this.mrTrendStrengthLimit = v; }
+        public long   getMrProbeTimeoutMs()          { return mrProbeTimeoutMs; }
+        public void   setMrProbeTimeoutMs(long v)    { this.mrProbeTimeoutMs = v; }
         public long   getMrConfirmedTimeoutMs()      { return mrConfirmedTimeoutMs; }
         public void   setMrConfirmedTimeoutMs(long v){ this.mrConfirmedTimeoutMs = v; }
+        public double getMrEntryBuffer()            { return mrEntryBuffer; }
+        public void   setMrEntryBuffer(double v)    { this.mrEntryBuffer = v; }
         public double getMrRangeHigh()              { return mrRangeHigh; }
         public void   setMrRangeHigh(double v)      { this.mrRangeHigh = v; }
         public double getMrRangeLow()               { return mrRangeLow; }
         public void   setMrRangeLow(double v)       { this.mrRangeLow = v; }
-        public double getMrEntryBuffer()            { return mrEntryBuffer; }
-        public void   setMrEntryBuffer(double v)    { this.mrEntryBuffer = v; }
     }
 
     // ── 回测配置 ──────────────────────────────────────────────────────────

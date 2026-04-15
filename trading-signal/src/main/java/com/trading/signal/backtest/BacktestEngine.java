@@ -187,23 +187,42 @@ public class BacktestEngine {
                     continue;
                 }
 
-                // 试探仓阶段：检查止损
+                // 试探仓阶段：检查止损和超时
                 if (inPosition && inProbe) {
-                    boolean slHit = "long".equals(posDirection)
-                        ? current.getLow() <= stopLoss : current.getHigh() >= stopLoss;
-                    if (slHit) {
+                    // 试探仓止损监控（模拟1分钟任务）
+                    // 策略内部记录的止损值（不是交易所止损）
+                    double internalStopLoss = 0;
+                    if (isMr) {
+                        MeanReversionStrategy mr = (MeanReversionStrategy) strategy;
+                        internalStopLoss = mr.getStopLoss();
+                    }
+                    
+                    boolean slHit = false;
+                    if (internalStopLoss > 0) {
+                        slHit = "long".equals(posDirection)
+                            ? current.getLow() <= internalStopLoss 
+                            : current.getHigh() >= internalStopLoss;
+                    }
+                    
+                    // 12小时超时检查（43200000ms = 12小时）
+                    long probeTimeMs = current.getTimestamp() - entryTime;
+                    boolean timeout = probeTimeMs >= 43200000L;
+                    
+                    if (slHit || timeout) {
+                        String exitReason = slHit ? "probe-sl" : "probe-timeout";
+                        double exitPrice = slHit ? internalStopLoss : current.getClose();
                         double pricePct = "long".equals(posDirection)
-                            ? (stopLoss - entryPrice) / entryPrice
-                            : (entryPrice - stopLoss) / entryPrice;
+                            ? (exitPrice - entryPrice) / entryPrice
+                            : (entryPrice - exitPrice) / entryPrice;
                         double pnlU = result.getCurrentCapital() * posSize * leverage * pricePct;
                         result.addTrade(new BacktestResult.Trade(
                             entryTime, posDirection, entryPrice,
-                            stopLoss, takeProfit, posSize,
-                            "probe-sl", pricePct * 100, pnlU));
+                            internalStopLoss, takeProfit, posSize,
+                            exitReason, pricePct * 100, pnlU));
                         if (isAgg) ((AggressiveStrategy) strategy).reset();
                         if (isMr) {
                             MeanReversionStrategy mr = (MeanReversionStrategy) strategy;
-                            mr.recordTradeResult(false, current.getTimestamp());
+                            mr.recordTradeResult(pnlU > 0, current.getTimestamp());
                             mr.reset();
                         }
                         inPosition = false; inProbe = false;
@@ -218,7 +237,17 @@ public class BacktestEngine {
 
                 try {
                     MarketData marketData = analyzer.analyze(window);
-                    TradeSignal signal = strategy.generateSignal(marketData);
+                    
+                    // 均值回归策略需要传入动态箱体
+                    TradeSignal signal;
+                    if (isMr) {
+                        List<KLine> klines4h = aggregate4h(allKlines, i);
+                        HtfRange htfRange = klines4h.size() >= 23
+                            ? analyzer.analyzeHtf(klines4h) : new HtfRange(false, 0, 0, "neutral");
+                        signal = strategy.generateSignal(marketData, htfRange);
+                    } else {
+                        signal = strategy.generateSignal(marketData);
+                    }
 
                     // 判断策略状态
                     boolean isConfirmed = false;
@@ -244,7 +273,8 @@ public class BacktestEngine {
                             entryPrice = current.getClose();
                             stopLoss = signal.getStopLoss();
                             takeProfit = signal.getTakeProfit();
-                            probeSize = signal.getPositionSize();
+                            // 置信度调整仓位：实际仓位 = 基础仓位 × 置信度
+                            probeSize = signal.getPositionSize() * signal.getConfidence();
                             posSize = probeSize;
                             entryTime = current.getTimestamp();
                             entryAtr = marketData.getAtr();
@@ -258,7 +288,8 @@ public class BacktestEngine {
                             entryPrice = current.getClose();
                             stopLoss = signal.getStopLoss();
                             takeProfit = signal.getTakeProfit();
-                            posSize = signal.getPositionSize();
+                            // 置信度调整仓位：实际仓位 = 基础仓位 × 置信度
+                            posSize = signal.getPositionSize() * signal.getConfidence();
                             entryTime = current.getTimestamp();
                             entryAtr = marketData.getAtr();
                             highestSinceEntry = current.getHigh();
@@ -277,7 +308,8 @@ public class BacktestEngine {
 
                             // 开确认仓（新的入场价、新的仓位）
                             entryPrice = current.getClose();
-                            posSize = signal.getPositionSize(); // 30%
+                            // 置信度调整仓位：实际仓位 = 基础仓位 × 置信度
+                            posSize = signal.getPositionSize() * signal.getConfidence();
                             stopLoss = signal.getStopLoss();
                             takeProfit = signal.getTakeProfit();
                             entryTime = current.getTimestamp();
@@ -386,7 +418,8 @@ public class BacktestEngine {
                     entryPrice   = current.getClose();
                     stopLoss     = signal.getStopLoss();
                     takeProfit   = signal.getTakeProfit();
-                    posSize      = signal.getPositionSize();
+                    // 置信度调整仓位：实际仓位 = 基础仓位 × 置信度
+                    posSize      = signal.getPositionSize() * signal.getConfidence();
                     entryTime    = current.getTimestamp();
                 } else {
                     result.recordReject(signal.getReason());

@@ -3,13 +3,13 @@
   "volume_spike" : false,
   "breakout" : "none",
   "continuation" : false,
-  "current_price" : 68629.7,
+  "current_price" : 73991.3,
   "strategy" : "mean-reversion",
   "action" : "no_trade",
-  "reason" : "MR-PROBE timeout 24h — closing",
+  "reason" : "MR-PROBE timeout 3.0h — closing",
   "confidence" : 0.0,
   "position_size" : 0.0,
   "stop_loss" : 0.0,
   "take_profit" : 0.0,
-  "generated_at" : "2026-04-01 17:00:10"
+  "generated_at" : "2026-04-15 16:30:10"
 }

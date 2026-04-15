@@ -145,7 +145,7 @@ public class TradeExecutor {
                     return false;
                 }
                 boolean ok = openPosition(signal, currentPrice, cfg);
-                if (ok) sendTradeEmail("试探仓下单成功", signal, currentPrice);
+                if (ok) sendProbeEmail(signal, currentPrice);
                 return ok;
             }
 
@@ -156,7 +156,7 @@ public class TradeExecutor {
                     return false;
                 }
                 boolean ok = openPosition(signal, currentPrice, cfg);
-                if (ok) sendTradeEmail("加仓成功（请手动调整整仓止盈止损）", signal, currentPrice);
+                if (ok) sendAddEmail(signal, currentPrice);
                 return ok;
             }
 
@@ -169,15 +169,23 @@ public class TradeExecutor {
 
     /**
      * 平仓试探仓：交易所必须有持仓
+     * @return true=平仓成功或无需平仓，false=平仓失败（需要人工处理）
      */
     public synchronized boolean closeProbe(String direction) {
         TradingProperties.TradeApi cfg = properties.getTradeApi();
-        if (!cfg.isEnabled()) return false;
+        if (!cfg.isEnabled()) return true;  // 未启用交易API，返回true避免误报
 
         double currentPos = queryPositionSize();
-        if (Double.isNaN(currentPos) || currentPos == 0) {
-            log.warn("交易所无持仓，无需平仓");
+        if (Double.isNaN(currentPos)) {
+            // 查询失败，无法确认持仓状态，返回false触发告警
+            log.error("查询持仓失败，无法确认是否需要平仓");
             return false;
+        }
+        
+        if (currentPos == 0) {
+            // 交易所无持仓，可能已被止损或手动平仓，无需平仓
+            log.info("交易所无持仓，无需平仓（可能已被止损或手动平仓）");
+            return true;  // 返回true，不触发告警邮件
         }
 
         try {
@@ -186,6 +194,8 @@ public class TradeExecutor {
             if (ok) {
                 log.info("试探仓平仓成功");
                 sendTradeEmail("平试探仓成功", null, 0);
+            } else {
+                log.error("平仓API调用失败: {}", result.toString());
             }
             return ok;
         } catch (Exception e) {
@@ -214,18 +224,40 @@ public class TradeExecutor {
             log.error("账户余额为0或查询失败，拒绝下单");
             return false;
         }
-        double positionValue = capital * signal.getPositionSize() * cfg.getLeverage();
+        
+        // 置信度调整仓位：实际仓位 = 基础仓位 × 置信度
+        // 例如：positionSize=0.10, confidence=0.60 → 实际仓位=0.06 (6%本金)
+        //      positionSize=0.30, confidence=0.85 → 实际仓位=0.255 (25.5%本金)
+        // 这样高质量信号自动放大仓位，低质量信号自动缩小仓位
+        double effectivePositionSize = signal.getPositionSize() * signal.getConfidence();
+        double positionValue = capital * effectivePositionSize * cfg.getLeverage();
         int contracts = Math.max(1, (int)(positionValue / (CONTRACT_SIZE * currentPrice)));
 
-        // 加仓：下单时直接附带止损止盈（attachAlgoOrds），与下单原子同步
-        // 人工收到邮件后再手动调整整仓止盈止损
-        // 试探仓：同样附带止损，防止服务重启/调度延迟导致裸奔
-        String sl = signal.getStopLoss() > 0
+        log.info("仓位计算: 本金={} 基础仓位={} 置信度={} 实际仓位={} 杠杆={} 名义价值={} 合约张数={}",
+            String.format("%.2f", capital),
+            String.format("%.2f", signal.getPositionSize()),
+            String.format("%.2f", signal.getConfidence()),
+            String.format("%.4f", effectivePositionSize),
+            cfg.getLeverage(),
+            String.format("%.2f", positionValue),
+            contracts);
+
+        // 止盈止损处理：
+        // - 试探仓（stopLoss=0）：不带止盈止损，策略监控保护
+        // - 加仓（stopLoss>0）：attachAlgoOrds 原子绑定整仓止盈止损
+        String sl = (signal.getStopLoss() > 0)
             ? String.format("%.1f", signal.getStopLoss()) : null;
-        String tp = signal.getTakeProfit() > 0
+        String tp = (signal.getTakeProfit() > 0)
             ? String.format("%.1f", signal.getTakeProfit()) : null;
 
-        log.info("下单: {} {}张 {} SL={} TP={}", side, contracts, isAdd ? "加仓" : "试探仓", sl, tp);
+        if (isAdd && sl != null) {
+            log.info("加仓: {} {}张 整仓止损={} 整仓止盈={} (attachAlgoOrds原子绑定)",
+                side, contracts, sl, tp);
+        } else if (!isAdd && sl == null) {
+            log.info("试探仓: {} {}张 无交易所止损（策略监控保护）", side, contracts);
+        } else {
+            log.info("下单: {} {}张 {} SL={} TP={}", side, contracts, isAdd ? "加仓" : "试探仓", sl, tp);
+        }
 
         JsonNode result = tradeClient.placeOrder(
             SWAP_INST_ID, "cross", side, null,
@@ -301,6 +333,78 @@ public class TradeExecutor {
             emailService.sendRawEmail(subject, body);
         } catch (Exception e) {
             log.error("交易通知邮件发送失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 发送试探仓邮件（不带止盈止损）
+     */
+    private void sendProbeEmail(TradeSignal signal, double price) {
+        TradingProperties.Email emailCfg = properties.getEmail();
+        if (!emailCfg.isEnabled()) return;
+
+        String subject = String.format("[试探仓开仓] %s", properties.getOkx().getInstId().toUpperCase());
+        String body = String.format(
+            "===== 试探仓开仓成功 =====\n\n" +
+            "方向    : %s\n" +
+            "价格    : %.2f\n" +
+            "仓位    : %.0f%% (实际 %.1f%%)\n" +
+            "止损    : 无（策略监控保护）\n" +
+            "止盈    : 无\n" +
+            "超时    : 3小时自动平仓\n" +
+            "模式    : %s\n\n" +
+            "【说明】\n" +
+            "试探仓不带交易所止损，由策略监控保护：\n" +
+            "- 每15分钟检查止损条件\n" +
+            "- 持仓超过3小时自动平仓\n" +
+            "- 浮盈达标+持仓45分钟后触发加仓\n\n" +
+            "========================",
+            signal.getAction().getValue().toUpperCase(),
+            price,
+            signal.getPositionSize() * 100,
+            signal.getPositionSize() * signal.getConfidence() * 100,
+            properties.getTradeApi().isSimulated() ? "模拟盘" : "实盘");
+
+        try {
+            emailService.sendRawEmail(subject, body);
+        } catch (Exception e) {
+            log.error("试探仓邮件发送失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 发送加仓邮件（带整仓止盈止损）
+     */
+    private void sendAddEmail(TradeSignal signal, double price) {
+        TradingProperties.Email emailCfg = properties.getEmail();
+        if (!emailCfg.isEnabled()) return;
+
+        String subject = String.format("[加仓成功] %s", properties.getOkx().getInstId().toUpperCase());
+        String body = String.format(
+            "===== 加仓成功 =====\n\n" +
+            "方向    : %s\n" +
+            "价格    : %.2f\n" +
+            "仓位    : %.0f%% (实际 %.1f%%)\n" +
+            "整仓止损: %.2f\n" +
+            "整仓止盈: %.2f\n" +
+            "模式    : %s\n\n" +
+            "【说明】\n" +
+            "加仓时已通过 attachAlgoOrds 原子绑定整仓止盈止损。\n" +
+            "交易所会自动执行，无需人工干预。\n" +
+            "如需调整止盈止损，请登录交易所手动修改。\n\n" +
+            "========================",
+            signal.getAction().getValue().toUpperCase(),
+            price,
+            signal.getPositionSize() * 100,
+            signal.getPositionSize() * signal.getConfidence() * 100,
+            signal.getStopLoss(),
+            signal.getTakeProfit(),
+            properties.getTradeApi().isSimulated() ? "模拟盘" : "实盘");
+
+        try {
+            emailService.sendRawEmail(subject, body);
+        } catch (Exception e) {
+            log.error("加仓邮件发送失败: {}", e.getMessage());
         }
     }
 }
