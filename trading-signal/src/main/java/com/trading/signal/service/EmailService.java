@@ -161,15 +161,18 @@ public class EmailService {
         // 1. 强制要求 TLS 握手（避免谷歌新版安全策略拦截）
         props.put("mail.smtp.starttls.required", "true");
 
-        // 2. 强行指定走 Socks5 代理！（这是解决 Connection reset 的核心）
-        // 注意端口换成了你刚才测通的 7897
-        props.put("mail.smtp.socks.host", "127.0.0.1");
-        props.put("mail.smtp.socks.port", "7897");
+        // 2. 代理配置（根据 application.yml 中的 proxy.enabled 决定是否启用）
+        TradingProperties.Proxy proxyCfg = properties.getProxy();
+        if (proxyCfg.isEnabled()) {
+            props.put("mail.smtp.socks.host", proxyCfg.getHost());
+            props.put("mail.smtp.socks.port", String.valueOf(proxyCfg.getPort()));
+            log.debug("邮件发送使用代理: {}:{}", proxyCfg.getHost(), proxyCfg.getPort());
+        }
 
-        // 3. 救命的超时设置（防止梯子卡顿导致你的量化主线程被卡死）
-        props.put("mail.smtp.connectiontimeout", "5000");
-        props.put("mail.smtp.timeout", "5000");
-        props.put("mail.smtp.writetimeout", "5000");
+        // 3. 超时设置（通过SOCKS代理需要更长时间）
+        props.put("mail.smtp.connectiontimeout", "30000");  // 30秒连接超时
+        props.put("mail.smtp.timeout", "30000");            // 30秒读取超时
+        props.put("mail.smtp.writetimeout", "30000");       // 30秒写入超时
         Session session = Session.getInstance(props, new Authenticator() {
             @Override
             protected PasswordAuthentication getPasswordAuthentication() {

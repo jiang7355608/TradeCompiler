@@ -123,6 +123,7 @@ public class MeanReversionStrategy implements Strategy {
         // 阈值统一用 0.3ATR，与 evaluateConfirmation 保持一致
         KLine last = data.getLastKline();
         KLine prev = data.getPrevKline();
+        KLine prev2 = data.getPrev2Kline();  // 用于置信度计算（双K加速确认）
         /*
         double breakoutThreshold = atr * 0.3;
         boolean strongBreakoutUp = last.getClose() > rangeHigh + breakoutThreshold
@@ -155,11 +156,14 @@ public class MeanReversionStrategy implements Strategy {
             state           = State.PROBE;
             lastTradeTime   = currentTs;
 
+            // 动态置信度计算
+            double confidence = calculateProbeConfidence(price, rangeLow, buffer, last, prev, prev2, true);
+
             // 试探仓不带止盈止损（策略监控保护，3小时超时自动平仓）
             return new TradeSignal(TradeSignal.Action.LONG,
-                String.format("MR-PROBE LONG: price=%.0f near lower %.0f (no exchange SL, strategy monitors %.1fh)",
-                    price, rangeLow, p.getMrProbeTimeoutMs() / 3600000.0),
-                0.60, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
+                String.format("MR-PROBE LONG: price=%.0f near lower %.0f conf=%.2f (no exchange SL, strategy monitors %.1fh)",
+                    price, rangeLow, confidence, p.getMrProbeTimeoutMs() / 3600000.0),
+                confidence, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
         }
 
         // 上沿做空
@@ -174,11 +178,14 @@ public class MeanReversionStrategy implements Strategy {
             state           = State.PROBE;
             lastTradeTime   = currentTs;
 
+            // 动态置信度计算
+            double confidence = calculateProbeConfidence(price, rangeHigh, buffer, last, prev, prev2, false);
+
             // 试探仓不带止盈止损（策略监控保护，3小时超时自动平仓）
             return new TradeSignal(TradeSignal.Action.SHORT,
-                String.format("MR-PROBE SHORT: price=%.0f near upper %.0f (no exchange SL, strategy monitors %.1fh)",
-                    price, rangeHigh, p.getMrProbeTimeoutMs() / 3600000.0),
-                0.60, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
+                String.format("MR-PROBE SHORT: price=%.0f near upper %.0f conf=%.2f (no exchange SL, strategy monitors %.1fh)",
+                    price, rangeHigh, confidence, p.getMrProbeTimeoutMs() / 3600000.0),
+                confidence, 0.10, 0, 0);  // stopLoss=0, takeProfit=0 表示不带止盈止损
         }
 
         return noTrade(String.format("Price %.0f in mid-range (%.0f - %.0f)", price, rangeLow, rangeHigh));
@@ -251,11 +258,14 @@ public class MeanReversionStrategy implements Strategy {
             TradeSignal.Action action = "up".equals(direction)
                 ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
             
+            // 动态置信度计算
+            double confidence = calculateAddConfidence(pnl, confirmThreshold, now - probeEntryTime);
+            
             // 加仓带止盈止损（attachAlgoOrds 原子绑定整仓）
             return new TradeSignal(action,
-                String.format("MR-ADD %s: pnl=+%.0f > %.0f(15%%span) held>45min — whole position SL=%.0f TP=%.0f",
-                    direction.toUpperCase(), pnl, confirmThreshold, stopLoss, takeProfit),
-                0.85, 0.30, stopLoss, takeProfit);
+                String.format("MR-ADD %s: pnl=+%.0f > %.0f(15%%span) held>45min conf=%.2f — whole position SL=%.0f TP=%.0f",
+                    direction.toUpperCase(), pnl, confirmThreshold, confidence, stopLoss, takeProfit),
+                confidence, 0.30, stopLoss, takeProfit);
         }
 
         // 超时（3小时）→ 触发平仓
@@ -331,6 +341,95 @@ public class MeanReversionStrategy implements Strategy {
                 consecutiveLosses = 0;
             }
         }
+    }
+
+    /**
+     * 计算试探仓置信度（基础0.50，最高0.80）
+     * 
+     * 因子：
+     * 1. 距离边沿：越接近边沿置信度越高（+0.15）
+     * 2. K线实体：实体越大说明方向越明确（+0.10）
+     * 3. 双K加速：连续两根K线同向且加速（+0.05）
+     */
+    private double calculateProbeConfidence(double price, double edge, double buffer,
+                                           KLine last, KLine prev, KLine prev2, boolean isLong) {
+        double confidence = 0.50;  // 基础置信度
+        
+        // 因子1：距离边沿（越接近边沿越好）
+        // 在 buffer 范围内，越接近边沿 +0.15
+        double distToEdge = isLong ? (price - edge) : (edge - price);
+        if (distToEdge <= buffer * 0.3) {
+            confidence += 0.15;  // 非常接近边沿（30%以内）
+        } else if (distToEdge <= buffer * 0.6) {
+            confidence += 0.10;  // 比较接近（60%以内）
+        } else {
+            confidence += 0.05;  // 在buffer内但不够接近
+        }
+        
+        // 因子2：K线实体大小（实体越大方向越明确）
+        // 实体占K线总长度的比例
+        double body = Math.abs(last.getClose() - last.getOpen());
+        double range = last.getHigh() - last.getLow();
+        if (range > 0) {
+            double bodyRatio = body / range;
+            if (bodyRatio > 0.60) {
+                confidence += 0.10;  // 实体大（>60%）
+            } else if (bodyRatio > 0.40) {
+                confidence += 0.05;  // 实体中等（>40%）
+            }
+        }
+        
+        // 因子3：双K加速确认（连续两根同向且加速）
+        // 做多：last > prev > prev2 且涨幅递增
+        // 做空：last < prev < prev2 且跌幅递增
+        if (isLong) {
+            boolean rising = last.getClose() > prev.getClose() && prev.getClose() > prev2.getClose();
+            double gain1 = prev.getClose() - prev2.getClose();
+            double gain2 = last.getClose() - prev.getClose();
+            if (rising && gain2 > gain1 * 1.1) {  // 加速上涨（涨幅增加10%以上）
+                confidence += 0.05;
+            }
+        } else {
+            boolean falling = last.getClose() < prev.getClose() && prev.getClose() < prev2.getClose();
+            double loss1 = prev2.getClose() - prev.getClose();
+            double loss2 = prev.getClose() - last.getClose();
+            if (falling && loss2 > loss1 * 1.1) {  // 加速下跌
+                confidence += 0.05;
+            }
+        }
+        
+        return Math.min(confidence, 0.80);  // 上限0.80
+    }
+    
+    /**
+     * 计算加仓置信度（基础0.70，最高0.95）
+     * 
+     * 因子：
+     * 1. 浮盈超额：超过阈值越多置信度越高（+0.15）
+     * 2. 持仓时间：持仓越久说明趋势越稳定（+0.10）
+     */
+    private double calculateAddConfidence(double pnl, double threshold, long holdTimeMs) {
+        double confidence = 0.70;  // 基础置信度
+        
+        // 因子1：浮盈超额比例
+        double excessRatio = (pnl - threshold) / threshold;
+        if (excessRatio > 0.50) {
+            confidence += 0.15;  // 浮盈超过阈值50%以上
+        } else if (excessRatio > 0.25) {
+            confidence += 0.10;  // 超过25%以上
+        } else {
+            confidence += 0.05;  // 刚达到阈值
+        }
+        
+        // 因子2：持仓时间（越久越稳定）
+        long holdHours = holdTimeMs / 3600000L;
+        if (holdHours >= 2) {
+            confidence += 0.10;  // 持仓2小时以上
+        } else if (holdHours >= 1) {
+            confidence += 0.05;  // 持仓1-2小时
+        }
+        
+        return Math.min(confidence, 0.95);  // 上限0.95
     }
 
     private TradeSignal noTrade(String reason) {
