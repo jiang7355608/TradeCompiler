@@ -11,12 +11,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * AggressiveStrategy v7 专用回测引擎（简化版）
+ * AggressiveStrategy v8 专用回测引擎（Trailing Stop 版本）
  * 
  * 特点：
  * 1. 突破即入场，无状态机
- * 2. 固定止损止盈（RR=2:1）
- * 3. 可选 Trailing Stop
+ * 2. 不使用固定止盈，纯 Trailing Stop
+ * 3. Trailing Stop = 当前价格 ± 1×ATR（只能向有利方向移动）
  */
 public class AggressiveBacktestEngine {
     
@@ -25,7 +25,6 @@ public class AggressiveBacktestEngine {
     private final MarketAnalyzer analyzer;
     private final double initialCapital;
     private final int leverage;
-    private final boolean useTrailingStop;
     private boolean silent = false;
     
     // 持仓状态
@@ -35,21 +34,16 @@ public class AggressiveBacktestEngine {
     private long entryTime;
     private double positionSize;
     private double stopLoss;
-    private double takeProfit;
+    private double entryAtr;  // 入场时的ATR，用于计算trailing stop
     
-    // Trailing Stop
-    private double highestSinceEntry;
-    private double lowestSinceEntry;
+    // Trailing Stop（核心）
+    private double trailingStop;
+    private double maxProfit;  // 最大浮盈（用于统计）
     
     public AggressiveBacktestEngine(TradingProperties props) {
-        this(props, false);
-    }
-    
-    public AggressiveBacktestEngine(TradingProperties props, boolean useTrailingStop) {
         this.analyzer = new MarketAnalyzer(props.getParams());
         this.initialCapital = props.getBacktest().getInitialCapital();
         this.leverage = props.getBacktest().getLeverage();
-        this.useTrailingStop = useTrailingStop;
     }
     
     public AggressiveBacktestEngine setSilent(boolean silent) {
@@ -86,7 +80,7 @@ public class AggressiveBacktestEngine {
     
     public BacktestResult run(List<KLine> allKlines, AggressiveStrategy strategy) {
         if (!silent) {
-            System.out.printf("%n开始回测: AGGRESSIVE v7 (Simple Breakout) | 共 %d 根K线%n", allKlines.size());
+            System.out.printf("%n开始回测: AGGRESSIVE v8 (Trailing Stop Only) | 共 %d 根K线%n", allKlines.size());
         }
         
         BacktestResult result = new BacktestResult(initialCapital, leverage);
@@ -163,58 +157,43 @@ public class AggressiveBacktestEngine {
         entryTime = current.getTimestamp();
         positionSize = signal.getPositionSize() * signal.getConfidence();
         stopLoss = signal.getStopLoss();
-        takeProfit = signal.getTakeProfit();
+        entryAtr = atr;
         
-        highestSinceEntry = current.getHigh();
-        lowestSinceEntry = current.getLow();
+        // 初始化 trailing stop = 初始止损
+        trailingStop = stopLoss;
+        maxProfit = 0;
     }
     
     private boolean checkExit(KLine current, BacktestResult result, AggressiveStrategy strategy) {
         double currentPrice = current.getClose();
         
-        // 更新最高/最低价
-        highestSinceEntry = Math.max(highestSinceEntry, current.getHigh());
-        lowestSinceEntry = Math.min(lowestSinceEntry, current.getLow());
-        
-        // 检查止损
+        // 修复：ATR 倍数从 1.0 改为 2.5，给趋势足够空间
         if ("long".equals(direction)) {
-            if (current.getLow() <= stopLoss) {
-                closePosition(current, result, strategy, "stop-loss");
-                return true;
-            }
+            // 做多：trailing stop 只能上移
+            double newTrailingStop = currentPrice - entryAtr * 4;
+            trailingStop = Math.max(trailingStop, newTrailingStop);
             
-            // Trailing Stop（可选）
-            if (useTrailingStop && highestSinceEntry > entryPrice) {
-                double trailingStop = highestSinceEntry - (entryPrice - stopLoss);
-                if (current.getLow() <= trailingStop) {
-                    closePosition(current, result, strategy, "trailing-stop");
-                    return true;
-                }
-            }
+            // 更新最大浮盈
+            double currentProfit = (currentPrice - entryPrice) / entryPrice * positionSize * leverage * initialCapital;
+            maxProfit = Math.max(maxProfit, currentProfit);
             
-            // 检查止盈
-            if (current.getHigh() >= takeProfit) {
-                closePosition(current, result, strategy, "take-profit");
+            // 检查是否触及 trailing stop
+            if (current.getLow() <= trailingStop) {
+                closePosition(current, result, strategy, "trailing-stop");
                 return true;
             }
         } else {
-            if (current.getHigh() >= stopLoss) {
-                closePosition(current, result, strategy, "stop-loss");
-                return true;
-            }
+            // 做空：trailing stop 只能下移
+            double newTrailingStop = currentPrice + entryAtr * 4;
+            trailingStop = Math.min(trailingStop, newTrailingStop);
             
-            // Trailing Stop（可选）
-            if (useTrailingStop && lowestSinceEntry < entryPrice) {
-                double trailingStop = lowestSinceEntry + (stopLoss - entryPrice);
-                if (current.getHigh() >= trailingStop) {
-                    closePosition(current, result, strategy, "trailing-stop");
-                    return true;
-                }
-            }
+            // 更新最大浮盈
+            double currentProfit = (entryPrice - currentPrice) / entryPrice * positionSize * leverage * initialCapital;
+            maxProfit = Math.max(maxProfit, currentProfit);
             
-            // 检查止盈
-            if (current.getLow() <= takeProfit) {
-                closePosition(current, result, strategy, "take-profit");
+            // 检查是否触及 trailing stop
+            if (current.getHigh() >= trailingStop) {
+                closePosition(current, result, strategy, "trailing-stop");
                 return true;
             }
         }
@@ -223,19 +202,7 @@ public class AggressiveBacktestEngine {
     }
     
     private void closePosition(KLine current, BacktestResult result, AggressiveStrategy strategy, String reason) {
-        double exitPrice;
-        
-        if ("stop-loss".equals(reason)) {
-            exitPrice = stopLoss;
-        } else if ("take-profit".equals(reason)) {
-            exitPrice = takeProfit;
-        } else if ("trailing-stop".equals(reason)) {
-            exitPrice = "long".equals(direction) 
-                ? (highestSinceEntry - (entryPrice - stopLoss))
-                : (lowestSinceEntry + (stopLoss - entryPrice));
-        } else {
-            exitPrice = current.getClose();
-        }
+        double exitPrice = trailingStop;  // 总是使用 trailing stop 作为退出价格
         
         double pnl;
         if ("long".equals(direction)) {
@@ -248,7 +215,7 @@ public class AggressiveBacktestEngine {
         
         // 创建 Trade 对象并添加到结果
         BacktestResult.Trade trade = new BacktestResult.Trade(
-            entryTime, direction, entryPrice, stopLoss, takeProfit, 
+            entryTime, direction, entryPrice, stopLoss, 0,  // takeProfit = 0 表示使用 trailing stop
             positionSize, reason, pnlPct, pnl
         );
         result.addTrade(trade);
@@ -258,8 +225,8 @@ public class AggressiveBacktestEngine {
         strategy.recordTradeResult(direction, pnl > 0, current.getTimestamp());
         
         if (!silent) {
-            System.out.printf("  EXIT %s @ %.2f | PnL: %.2fU (%.2f%%) | Reason: %s%n", 
-                direction.toUpperCase(), exitPrice, pnl, pnlPct * 100, reason);
+            System.out.printf("  EXIT %s @ %.2f | PnL: %.2fU (%.2f%%) MaxProfit: %.2fU | TrailingStop: %.2f | Reason: %s%n", 
+                direction.toUpperCase(), exitPrice, pnl, pnlPct * 100, maxProfit, trailingStop, reason);
         }
         
         inPosition = false;

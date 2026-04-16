@@ -2,8 +2,8 @@
   "is_range" : false,
   "volume_spike" : false,
   "breakout" : "none",
-  "continuation" : false,
-  "current_price" : 74690.6,
+  "continuation" : true,
+  "current_price" : 74544.5,
   "strategy" : "aggressive",
   "action" : "no_trade",
   "reason" : "Range too narrow: 1.32% < 3% (range: 74447-75430)",
@@ -11,5 +11,5 @@
   "position_size" : 0.0,
   "stop_loss" : 0.0,
   "take_profit" : 0.0,
-  "generated_at" : "2026-04-16 16:00:10"
+  "generated_at" : "2026-04-16 16:15:10"
 }

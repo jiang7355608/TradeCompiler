@@ -172,7 +172,9 @@ public class AggressiveStrategy implements Strategy {
                 return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
             }
             
-            double takeProfit = entryPrice + slDist * 2.0;
+            // v8 修改：删除固定止盈，使用 trailing stop
+            // double takeProfit = entryPrice + slDist * 2.0;
+            double takeProfit = 0;  // 不使用固定止盈
             
             // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
             double riskPerTrade = 0.02;
@@ -205,12 +207,12 @@ public class AggressiveStrategy implements Strategy {
             
             // 修复6：完整的调试输出
             return new TradeSignal(TradeSignal.Action.LONG,
-                String.format("BREAKOUT LONG: entry=%.2f SL=%.2f TP=%.2f | " +
+                String.format("BREAKOUT LONG (Trailing Stop): entry=%.2f SL=%.2f (no fixed TP, using trailing) | " +
                               "Range: %.0f-%.0f (%.1f%%) ATR=%.0f momentum=%.0f | " +
                               "Risk Model: balance=%.0fU riskAmount=%.2fU(%.1f%%) slDist=%.2f(%.2f%%) | " +
                               "Position: notional=%.0fU margin=%.2fU(%.1f%%) actualRisk=%.2fU | " +
                               "Validation: actualRisk/riskAmount=%.2f%%",
-                    entryPrice, stopLoss, takeProfit,
+                    entryPrice, stopLoss,
                     rangeLow, rangeHigh, rangeWidth * 100, atr, last.getClose() - rangeHigh,
                     accountBalance, riskAmount, riskPerTrade * 100, slDist, priceRiskRatio * 100,
                     positionNotional, margin, position * 100, actualRisk,
@@ -238,7 +240,9 @@ public class AggressiveStrategy implements Strategy {
                 return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
             }
             
-            double takeProfit = entryPrice - slDist * 2.0;
+            // v8 修改：删除固定止盈，使用 trailing stop
+            // double takeProfit = entryPrice - slDist * 2.0;
+            double takeProfit = 0;  // 不使用固定止盈
             
             // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
             double riskPerTrade = 0.02;
@@ -271,12 +275,12 @@ public class AggressiveStrategy implements Strategy {
             
             // 修复6：完整的调试输出
             return new TradeSignal(TradeSignal.Action.SHORT,
-                String.format("BREAKOUT SHORT: entry=%.2f SL=%.2f TP=%.2f | " +
+                String.format("BREAKOUT SHORT (Trailing Stop): entry=%.2f SL=%.2f (no fixed TP, using trailing) | " +
                               "Range: %.0f-%.0f (%.1f%%) ATR=%.0f momentum=%.0f | " +
                               "Risk Model: balance=%.0fU riskAmount=%.2fU(%.1f%%) slDist=%.2f(%.2f%%) | " +
                               "Position: notional=%.0fU margin=%.2fU(%.1f%%) actualRisk=%.2fU | " +
                               "Validation: actualRisk/riskAmount=%.2f%%",
-                    entryPrice, stopLoss, takeProfit,
+                    entryPrice, stopLoss,
                     rangeLow, rangeHigh, rangeWidth * 100, atr, rangeLow - last.getClose(),
                     accountBalance, riskAmount, riskPerTrade * 100, slDist, priceRiskRatio * 100,
                     positionNotional, margin, position * 100, actualRisk,
