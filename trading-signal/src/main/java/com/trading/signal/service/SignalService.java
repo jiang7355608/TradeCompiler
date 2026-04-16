@@ -6,6 +6,7 @@ import com.trading.signal.config.TradingProperties;
 import com.trading.signal.model.KLine;
 import com.trading.signal.model.MarketData;
 import com.trading.signal.model.TradeSignal;
+import com.trading.signal.strategy.AggressiveStrategy;
 import com.trading.signal.strategy.Strategy;
 import com.trading.signal.strategy.StrategyRouter;
 import org.slf4j.Logger;
@@ -68,6 +69,20 @@ public class SignalService {
 
             // Step 3: 策略决策
             Strategy    strategy    = strategyRouter.current();
+            
+            // 修复2：实盘从交易所获取账户余额（仅对 AggressiveStrategy）
+            if (strategy instanceof AggressiveStrategy aggStrategy) {
+                if (properties.getTradeApi().isEnabled()) {
+                    try {
+                        double balance = tradeExecutor.getOkxTradeClient().getBalance();
+                        aggStrategy.setAccountBalance(balance);
+                        log.debug("从交易所获取账户余额: {}U", String.format("%.2f", balance));
+                    } catch (Exception e) {
+                        log.warn("获取账户余额失败，使用默认值: {}", e.getMessage());
+                    }
+                }
+            }
+            
             TradeSignal tradeSignal;
 
             // 均值回归策略：额外拉4小时K线做大箱体分析

@@ -7,51 +7,88 @@ import com.trading.signal.model.TradeSignal;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
- * AggressiveStrategy v5 — Pullback Continuation（回调续势）
- *
- * ═══ Edge ═══
- * BTC趋势确立后，回调到均线附近是低风险入场点。
- * 不预测方向，不追突破。等趋势成立 → 等回调 → 回调结束续势时入场。
- *
- * ═══ 与之前版本的根本区别 ═══
- * v1-v4: 试图在趋势启动时入场（breakout），大量假突破导致低胜率
- * v5:    等趋势已经走了一段，回调到支撑位再入场，胜率和盈亏比同时提升
- *
- * ═══ 入场条件（全部满足）═══
- * 1. EMA Alignment: EMA5 > EMA20 > EMA50（做多）或反向（做空）
- * 2. 价格回调到EMA20附近（距离 < 0.5×ATR）
- * 3. 回调结束信号：当前K线收盘重新朝趋势方向（反弹/回落确认）
- * 4. 结构完整：最近K线维持 Higher High/Higher Low（做多）或反向
- *
- * ═══ 出场 ═══
- * SL: 2×ATR（固定，入场时确定）
- * TP: 无固定止盈，回测引擎用 Trailing Stop（最高/低价 - 3×ATR）
- *     实盘由人管理
- *
- * ═══ 风控 ═══
- * 仓位 = 本金2%风险 / (2×ATR×杠杆)
- * 每天最多2-3笔（冷却期控制）
- * 无PROBE机制——条件满足直接入场，不满足不交易
+ * AggressiveStrategy v7 — Simple Breakout (追突破)
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【核心理念】抓住趋势启动，承受假突破
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 不等回踩 → 突破确认 → 立即入场
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【1】区间定义
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 使用最近 N=40 根K线（不包含当前K线）
+ * rangeHigh = 最高价
+ * rangeLow = 最低价
+ * 
+ * 过滤条件：
+ * - 区间宽度 > 3%（过滤无波动市场）
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【2】突破入场
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 做多条件：
+ * - 当前K线收盘价 > rangeHigh
+ * - (close - rangeHigh) > 0.3×ATR（动量确认）
+ * → 立即做多
+ * 
+ * 做空条件：
+ * - 当前K线收盘价 < rangeLow
+ * - (rangeLow - close) > 0.3×ATR（动量确认）
+ * → 立即做空
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【3】止损
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 做多：SL = rangeHigh - 1×ATR
+ * 做空：SL = rangeLow + 1×ATR
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【4】止盈
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 固定盈亏比：RR = 2:1
+ * TP = entryPrice + 2 × (entryPrice - stopLoss)
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【5】仓位管理
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * 单笔风险：2%账户资金
+ * 仓位 = riskAmount / (止损距离 / 价格)
+ * 
+ * 约束：
+ * - 最大仓位：30%
+ * - 无最小仓位限制
+ * 
+ * ═══════════════════════════════════════════════════════════════════════
+ * 【6】防止过度交易
+ * ═══════════════════════════════════════════════════════════════════════
+ * 
+ * - 同一方向连续失败2次 → 暂停该方向1小时
+ * - 全局冷却：15分钟
  */
 @Component
 public class AggressiveStrategy implements Strategy {
 
-    public enum State { IDLE, CONFIRMED }
-
     private final TradingProperties.StrategyParams p;
 
-    private State  state = State.IDLE;
-    private String direction;
-    private double entryPrice;
-    private double stopLoss;
-    private double takeProfit;
-    private double entryAtr;
-    private long   lastTradeTime;
-    private double highestSinceEntry;
-    private double lowestSinceEntry;
-    private int    dailyTradeCount;
-    private long   currentDay;
+    // 风控
+    private long lastTradeTime;
+    private long lastLongFailTime;
+    private long lastShortFailTime;
+    private int consecutiveLongFails;
+    private int consecutiveShortFails;
+    
+    // 账户余额（实盘从交易所获取，回测使用固定值）
+    private double accountBalance = 200.0;
 
     @Autowired
     public AggressiveStrategy(TradingProperties props) {
@@ -63,116 +100,226 @@ public class AggressiveStrategy implements Strategy {
     }
 
     @Override public String getName() { return "aggressive"; }
-    public State getState() { return state; }
-    public double getStopLoss() { return stopLoss; }
-    public double getTakeProfit() { return takeProfit; }
+    
+    /**
+     * 设置账户余额（实盘调用，从交易所获取）
+     */
+    public void setAccountBalance(double balance) {
+        this.accountBalance = balance;
+    }
+    
+    /**
+     * 获取当前账户余额
+     */
+    public double getAccountBalance() {
+        return this.accountBalance;
+    }
 
     @Override
     public TradeSignal generateSignal(MarketData data) {
-        return switch (state) {
-            case IDLE      -> evaluateEntry(data);
-            case CONFIRMED -> evaluateExit(data);
-        };
-    }
-
-    // ══════════════════════════════════════════════════════════════════════
-    // IDLE → 等待完美 setup：趋势确立 + 回调到均线 + 续势确认
-    // ══════════════════════════════════════════════════════════════════════
-    private TradeSignal evaluateEntry(MarketData data) {
         double atr   = data.getAtr();
         double price = data.getCurrentPrice();
         long   now   = data.getLastKline().getTimestamp();
 
-        if (atr <= 0) return noTrade("IDLE: ATR=0");
+        if (atr <= 0) return noTrade("ATR=0");
 
-        // 每日交易次数限制
-        long day = now / 86400000L;
-        if (day != currentDay) { currentDay = day; dailyTradeCount = 0; }
-        if (dailyTradeCount >= 3) return noTrade("IDLE: daily limit reached");
-
-        // 冷却
-        if (now - lastTradeTime < p.getAggCooldownMs()) {
-            return noTrade("IDLE: cooldown");
+        // ── 全局冷却期：15分钟 ──────────────────────────────────────
+        if (now - lastTradeTime < 15 * 60 * 1000L) {
+            return noTrade("Global cooldown (15min)");
         }
 
-        // ═══ 核心门控：趋势必须已成立（4重确认全部通过）═══
-        String established = data.getTrendEstablished();
-        if ("none".equals(established)) {
-            return noTrade("IDLE: trend not established");
+        // ── 1. 定义区间（最近40根K线，排除当前K线）─────────────────
+        List<KLine> klines = data.getKlines();
+        int lookback = Math.min(40, klines.size() - 1);
+        if (lookback < 20) {
+            return noTrade("Not enough data (need 40 bars)");
+        }
+        
+        double rangeHigh = Double.MIN_VALUE;
+        double rangeLow = Double.MAX_VALUE;
+        for (int i = klines.size() - lookback - 1; i < klines.size() - 1; i++) {
+            KLine k = klines.get(i);
+            rangeHigh = Math.max(rangeHigh, k.getHigh());
+            rangeLow = Math.min(rangeLow, k.getLow());
+        }
+        
+        // ── 2. 过滤：区间宽度 > 3% ────────────────────────────────────
+        double rangeWidth = (rangeHigh - rangeLow) / rangeLow;
+        if (rangeWidth < 0.03) {
+            return noTrade(String.format("Range too narrow: %.2f%% < 3%% (range: %.0f-%.0f)", 
+                rangeWidth * 100, rangeLow, rangeHigh));
         }
 
-        double ema20 = data.getEma20();
-        KLine last   = data.getLastKline();
-        KLine prev   = data.getPrevKline();
-        KLine prev2  = data.getPrev2Kline();
-
-        // ── 回调到EMA20附近（距离 < 0.8×ATR）────────────────────────
-        double distToEma20 = Math.abs(price - ema20);
-        if (distToEma20 > atr * 0.8) {
-            return noTrade(String.format("IDLE: price too far from EMA20 (dist=%.0f > 0.8×ATR=%.0f)",
-                distToEma20, atr * 0.8));
+        KLine last = data.getLastKline();
+        
+        // ── 3. 做多突破检测 ────────────────────────────────────────────
+        boolean longBreakout = last.getClose() > rangeHigh 
+                            && (last.getClose() - rangeHigh) > atr * 0.3;
+        
+        if (longBreakout) {
+            // 检查做多方向是否被暂停
+            if (consecutiveLongFails >= 2 && now - lastLongFailTime < 60 * 60 * 1000L) {
+                return noTrade(String.format("LONG direction paused (2 consecutive fails, wait 1h)"));
+            }
+            
+            // 修复1：入场价格必须使用 last.getClose()，与信号判断一致
+            double entryPrice = last.getClose();
+            double stopLoss = rangeHigh - atr * 1.0;
+            
+            // 修复3：止损距离保护
+            double slDist = entryPrice - stopLoss;
+            if (slDist <= 0) {
+                return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
+            }
+            
+            double takeProfit = entryPrice + slDist * 2.0;
+            
+            // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
+            double riskPerTrade = 0.02;
+            double riskAmount = accountBalance * riskPerTrade;
+            int leverage = 20;
+            
+            double priceRiskRatio = slDist / entryPrice;
+            if (priceRiskRatio < 0.002) {
+                return noTrade(String.format("Stop loss too tight (%.3f%% < 0.2%%)", priceRiskRatio * 100));
+            }
+            
+            double positionNotional = riskAmount / priceRiskRatio;
+            double margin = positionNotional / leverage;
+            double maxMargin = accountBalance * 0.30;
+            
+            if (margin > maxMargin) {
+                margin = maxMargin;
+                positionNotional = margin * leverage;
+            }
+            
+            double position = margin / accountBalance;
+            double actualRisk = positionNotional * priceRiskRatio;
+            
+            // 修复5：风险校验（允许10%误差）
+            if (actualRisk > riskAmount * 1.1) {
+                return noTrade(String.format("Risk exceeds limit (%.2fU > %.2fU)", actualRisk, riskAmount * 1.1));
+            }
+            
+            lastTradeTime = now;
+            
+            // 修复6：完整的调试输出
+            return new TradeSignal(TradeSignal.Action.LONG,
+                String.format("BREAKOUT LONG: entry=%.2f SL=%.2f TP=%.2f | " +
+                              "Range: %.0f-%.0f (%.1f%%) ATR=%.0f momentum=%.0f | " +
+                              "Risk Model: balance=%.0fU riskAmount=%.2fU(%.1f%%) slDist=%.2f(%.2f%%) | " +
+                              "Position: notional=%.0fU margin=%.2fU(%.1f%%) actualRisk=%.2fU | " +
+                              "Validation: actualRisk/riskAmount=%.2f%%",
+                    entryPrice, stopLoss, takeProfit,
+                    rangeLow, rangeHigh, rangeWidth * 100, atr, last.getClose() - rangeHigh,
+                    accountBalance, riskAmount, riskPerTrade * 100, slDist, priceRiskRatio * 100,
+                    positionNotional, margin, position * 100, actualRisk,
+                    actualRisk / riskAmount * 100),
+                0.75, position, stopLoss, takeProfit);
         }
-
-        // ── 回调结束确认：前一根逆势 + 当前顺势 ──────────────────────
-        boolean pullbackBounce;
-        if ("up".equals(established)) {
-            pullbackBounce = prev.getClose() < prev2.getClose()
-                          && last.getClose() > prev.getClose();
-        } else {
-            pullbackBounce = prev.getClose() > prev2.getClose()
-                          && last.getClose() < prev.getClose();
+        
+        // ── 4. 做空突破检测 ────────────────────────────────────────────
+        boolean shortBreakout = last.getClose() < rangeLow
+                             && (rangeLow - last.getClose()) > atr * 0.3;
+        
+        if (shortBreakout) {
+            // 检查做空方向是否被暂停
+            if (consecutiveShortFails >= 2 && now - lastShortFailTime < 60 * 60 * 1000L) {
+                return noTrade(String.format("SHORT direction paused (2 consecutive fails, wait 1h)"));
+            }
+            
+            // 修复1：入场价格必须使用 last.getClose()，与信号判断一致
+            double entryPrice = last.getClose();
+            double stopLoss = rangeLow + atr * 1.0;
+            
+            // 修复3：止损距离保护
+            double slDist = stopLoss - entryPrice;
+            if (slDist <= 0) {
+                return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
+            }
+            
+            double takeProfit = entryPrice - slDist * 2.0;
+            
+            // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
+            double riskPerTrade = 0.02;
+            double riskAmount = accountBalance * riskPerTrade;
+            int leverage = 20;
+            
+            double priceRiskRatio = slDist / entryPrice;
+            if (priceRiskRatio < 0.002) {
+                return noTrade(String.format("Stop loss too tight (%.3f%% < 0.2%%)", priceRiskRatio * 100));
+            }
+            
+            double positionNotional = riskAmount / priceRiskRatio;
+            double margin = positionNotional / leverage;
+            double maxMargin = accountBalance * 0.30;
+            
+            if (margin > maxMargin) {
+                margin = maxMargin;
+                positionNotional = margin * leverage;
+            }
+            
+            double position = margin / accountBalance;
+            double actualRisk = positionNotional * priceRiskRatio;
+            
+            // 修复5：风险校验（允许10%误差）
+            if (actualRisk > riskAmount * 1.1) {
+                return noTrade(String.format("Risk exceeds limit (%.2fU > %.2fU)", actualRisk, riskAmount * 1.1));
+            }
+            
+            lastTradeTime = now;
+            
+            // 修复6：完整的调试输出
+            return new TradeSignal(TradeSignal.Action.SHORT,
+                String.format("BREAKOUT SHORT: entry=%.2f SL=%.2f TP=%.2f | " +
+                              "Range: %.0f-%.0f (%.1f%%) ATR=%.0f momentum=%.0f | " +
+                              "Risk Model: balance=%.0fU riskAmount=%.2fU(%.1f%%) slDist=%.2f(%.2f%%) | " +
+                              "Position: notional=%.0fU margin=%.2fU(%.1f%%) actualRisk=%.2fU | " +
+                              "Validation: actualRisk/riskAmount=%.2f%%",
+                    entryPrice, stopLoss, takeProfit,
+                    rangeLow, rangeHigh, rangeWidth * 100, atr, rangeLow - last.getClose(),
+                    accountBalance, riskAmount, riskPerTrade * 100, slDist, priceRiskRatio * 100,
+                    positionNotional, margin, position * 100, actualRisk,
+                    actualRisk / riskAmount * 100),
+                0.75, position, stopLoss, takeProfit);
         }
-
-        if (!pullbackBounce) {
-            return noTrade(String.format("IDLE: no pullback bounce (trend=%s)", established));
-        }
-
-        // ═══ 全部条件满足，入场 ═══
-        direction = established;
-        entryPrice = price;
-        entryAtr   = atr;
-        highestSinceEntry = price;
-        lowestSinceEntry  = price;
-        lastTradeTime = now;
-        dailyTradeCount++;
-
-        double slDist = atr * p.getAggSlAtrMult();
-        stopLoss = "up".equals(direction) ? price - slDist : price + slDist;
-        double tpDist = atr * p.getAggTpAtrMult();
-        takeProfit = "up".equals(direction) ? price + tpDist : price - tpDist;
-
-        // 仓位：单笔风险 ≤ 本金2%
-        double riskPerUnit = slDist / price * 20;
-        double position = Math.min(0.02 / riskPerUnit, 0.30);
-        position = Math.max(position, 0.05);
-
-        state = State.CONFIRMED;
-
-        TradeSignal.Action action = "up".equals(direction)
-            ? TradeSignal.Action.LONG : TradeSignal.Action.SHORT;
-        return new TradeSignal(action,
-            String.format("ENTRY %s: trend-established + pullback-bounce ATR=%.0f pos=%.0f%% SL=%.2f TP=%.2f",
-                direction.toUpperCase(), atr, position * 100, stopLoss, takeProfit),
-            0.75, position, stopLoss, takeProfit);
+        
+        return noTrade(String.format("No breakout (price=%.0f, range: %.0f-%.0f, ATR=%.0f)", 
+            price, rangeLow, rangeHigh, atr));
     }
 
-    // ══════════════════════════════════════════════════════════════════════
-    // CONFIRMED → 实盘reset（人管止盈止损），回测由引擎管
-    // ══════════════════════════════════════════════════════════════════════
-    private TradeSignal evaluateExit(MarketData data) {
-        reset();
-        return noTrade("CONFIRMED handed off — reset");
+    /**
+     * 记录交易结果（用于方向暂停逻辑）
+     * 回测引擎应该在平仓后调用此方法
+     * 
+     * @param direction "long" or "short"
+     * @param isWin 是否盈利
+     * @param timestamp 交易时间（K线时间，不是系统时间）
+     */
+    public void recordTradeResult(String direction, boolean isWin, long timestamp) {
+        if ("long".equals(direction)) {
+            if (isWin) {
+                consecutiveLongFails = 0;
+            } else {
+                consecutiveLongFails++;
+                lastLongFailTime = timestamp;  // 修复4：使用K线时间
+            }
+        } else if ("short".equals(direction)) {
+            if (isWin) {
+                consecutiveShortFails = 0;
+            } else {
+                consecutiveShortFails++;
+                lastShortFailTime = timestamp;  // 修复4：使用K线时间
+            }
+        }
     }
 
     public void reset() {
-        state = State.IDLE;
-        direction = null;
-        entryPrice = 0;
-        stopLoss = 0;
-        takeProfit = 0;
-        entryAtr = 0;
-        highestSinceEntry = 0;
-        lowestSinceEntry = Double.MAX_VALUE;
+        lastTradeTime = 0;
+        lastLongFailTime = 0;
+        lastShortFailTime = 0;
+        consecutiveLongFails = 0;
+        consecutiveShortFails = 0;
     }
 
     private TradeSignal noTrade(String reason) {

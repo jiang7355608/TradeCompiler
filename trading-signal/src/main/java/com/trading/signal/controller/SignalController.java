@@ -149,13 +149,21 @@ public class SignalController {
         String strategyName = strategy != null ? strategy : properties.getStrategy();
         Strategy strat = strategyRouter.getStrategy(strategyName);
         
-        // 均值回归策略使用新引擎
+        // 根据策略类型选择回测引擎
         BacktestResult result;
         if ("mean-reversion".equals(strategyName)) {
+            // 均值回归策略使用专用引擎
             MeanReversionBacktestEngine mrEngine = new MeanReversionBacktestEngine(properties);
             List<KLine> allKlines = mrEngine.loadCsv(csvFile);
             result = mrEngine.run(allKlines, (MeanReversionStrategy) strat);
+        } else if ("aggressive".equals(strategyName)) {
+            // 激进策略使用专用引擎
+            com.trading.signal.backtest.AggressiveBacktestEngine aggEngine = 
+                new com.trading.signal.backtest.AggressiveBacktestEngine(properties);
+            List<KLine> allKlines = aggEngine.loadCsv(csvFile);
+            result = aggEngine.run(allKlines, (com.trading.signal.strategy.AggressiveStrategy) strat);
         } else {
+            // 其他策略使用通用引擎
             BacktestEngine engine = new BacktestEngine(properties);
             List<KLine> allKlines = engine.loadCsv(csvFile);
             result = engine.run(allKlines, strat, startMs, endMs);

@@ -106,7 +106,7 @@ public class MarketAnalyzer {
             isRange, volumeSpike, breakout6, continuation,
             last.getClose(), maxHigh6, minLow6, amplitude, last, avgVolume20,
             trendBias, strongCont, breakout14, maxHigh14, minLow14, prev, prev2,
-            ema5, ema20, atr, ema50, trendEstablished
+            ema5, ema20, atr, ema50, trendEstablished, klines
         );
     }
 

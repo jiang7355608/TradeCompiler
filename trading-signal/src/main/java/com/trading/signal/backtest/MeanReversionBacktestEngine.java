@@ -30,6 +30,12 @@ public class MeanReversionBacktestEngine {
     private final long probeTimeoutMs;
     private boolean silent = false;
     
+    // 动态箱体缓存（模拟实盘的24小时更新机制）
+    private double cachedRangeHigh = 0;
+    private double cachedRangeLow = 0;
+    private long lastBoxUpdateTime = 0;
+    private static final long BOX_UPDATE_INTERVAL_MS = 24 * 3600 * 1000L;  // 24小时
+    
     // 持仓状态
     private enum PositionState { IDLE, PROBE, CONFIRMED }
     private PositionState state = PositionState.IDLE;
@@ -38,6 +44,7 @@ public class MeanReversionBacktestEngine {
     private long probeEntryTime;
     private double probeSize;
     private double confirmedEntryPrice;
+    private long confirmedEntryTime;    // 加仓时间戳
     private double confirmedSize;
     private double stopLoss;
     private double takeProfit;
@@ -110,18 +117,66 @@ public class MeanReversionBacktestEngine {
             try {
                 MarketData marketData = analyzer.analyze(window);
                 
-                // 如果配置了手动箱体，不需要聚合4小时K线
+                // 动态箱体更新逻辑（模拟实盘的24小时更新机制）
                 HtfRange htfRange;
                 TradingProperties.StrategyParams params = strategy.getParams();
+                
                 if (params.getMrRangeHigh() > 0 && params.getMrRangeLow() > 0) {
                     // 手动箱体：直接使用配置值
                     htfRange = new HtfRange(true, params.getMrRangeHigh(), params.getMrRangeLow(), "neutral");
                 } else {
-                    // 动态箱体：聚合4小时K线分析
-                    List<KLine> klines4h = aggregate4h(allKlines, i);
-                    htfRange = klines4h.size() >= 23
-                        ? analyzer.analyzeHtf(klines4h)
-                        : new HtfRange(false, 0, 0, "neutral");
+                    // 动态箱体：模拟24小时更新机制
+                    long currentTime = current.getTimestamp();
+                    boolean shouldUpdate = (currentTime - lastBoxUpdateTime) >= BOX_UPDATE_INTERVAL_MS;
+                    boolean hasPosition = (state != PositionState.IDLE);
+                    
+                    // 更新条件：距离上次更新>=24小时 且 无持仓
+                    if (shouldUpdate && !hasPosition) {
+                        // 聚合4小时K线分析箱体（只用当前时间点之前的数据，避免未来函数）
+                        List<KLine> historicalData = allKlines.subList(0, i + 1);
+                        List<KLine> klines4h = aggregate4hFromList(historicalData);
+                        if (klines4h.size() >= 42) {  // 至少需要42根4h K线（7天）
+                            HtfRange newRange = analyzer.analyzeHtf(klines4h);
+                            if (newRange.isRange()) {
+                                double oldHigh = cachedRangeHigh;
+                                double oldLow = cachedRangeLow;
+                                cachedRangeHigh = newRange.getRangeHigh();
+                                cachedRangeLow = newRange.getRangeLow();
+                                lastBoxUpdateTime = currentTime;
+                                if (!silent) {
+                                    System.out.printf("  [箱体更新] 时间=%d, 箱体=[%.0f - %.0f] (旧箱体=[%.0f - %.0f])%n",
+                                        currentTime, cachedRangeLow, cachedRangeHigh, oldLow, oldHigh);
+                                }
+                            }
+                        }
+                    } else if (shouldUpdate && hasPosition) {
+                        if (!silent) {
+                            System.out.printf("  [箱体更新] 跳过（存在持仓）%n");
+                        }
+                    }
+                    
+                    // 使用缓存的箱体
+                    if (cachedRangeHigh > 0 && cachedRangeLow > 0) {
+                        htfRange = new HtfRange(true, cachedRangeHigh, cachedRangeLow, "neutral");
+                        // DEBUG: 打印缓存箱体
+                        if (!silent && i % 100 == 0) {  // 每100根K线打印一次，避免刷屏
+                            System.out.printf("  [DEBUG] 使用缓存箱体: [%.0f - %.0f], 中线=%.0f%n",
+                                cachedRangeLow, cachedRangeHigh, (cachedRangeHigh + cachedRangeLow) / 2.0);
+                        }
+                    } else {
+                        // 首次运行，尝试识别箱体（只用当前时间点之前的数据）
+                        List<KLine> historicalData = allKlines.subList(0, i + 1);
+                        List<KLine> klines4h = aggregate4hFromList(historicalData);
+                        htfRange = klines4h.size() >= 42
+                            ? analyzer.analyzeHtf(klines4h)
+                            : new HtfRange(false, 0, 0, "neutral");
+                        
+                        if (htfRange.isRange()) {
+                            cachedRangeHigh = htfRange.getRangeHigh();
+                            cachedRangeLow = htfRange.getRangeLow();
+                            lastBoxUpdateTime = currentTime;
+                        }
+                    }
                 }
                 
                 TradeSignal signal = strategy.generateSignal(marketData, htfRange);
@@ -239,12 +294,19 @@ public class MeanReversionBacktestEngine {
             stopLoss, takeProfit, probeSize,
             "probe-confirmed", probePricePct * 100, probePnlU));
         
-        // 2. 开确认仓
+        // 2. 开确认仓（记录加仓时间）
         state = PositionState.CONFIRMED;
         confirmedEntryPrice = current.getClose();
+        confirmedEntryTime = current.getTimestamp();  // 记录加仓时间
         confirmedSize = signal.getPositionSize() * signal.getConfidence();
         stopLoss = signal.getStopLoss();
         takeProfit = signal.getTakeProfit();
+        
+        // 3. 日志输出（DEBUG：打印signal中的止盈价格）
+        if (!silent) {
+            System.out.printf("  [加仓] %s @ %.2f, size=%.4f, SL=%.0f, TP=%.0f (signal.TP=%.0f)%n",
+                direction.toUpperCase(), confirmedEntryPrice, confirmedSize, stopLoss, takeProfit, signal.getTakeProfit());
+        }
     }
     
     private boolean checkConfirmedExit(KLine current, BacktestResult result, MeanReversionStrategy strategy) {
@@ -286,8 +348,9 @@ public class MeanReversionBacktestEngine {
                 result.getCurrentCapital(), confirmedSize, leverage, pricePct, pnlU);
         }
         
+        // 使用正确的加仓时间戳
         result.addTrade(new BacktestResult.Trade(
-            probeEntryTime, direction, confirmedEntryPrice,
+            confirmedEntryTime, direction, confirmedEntryPrice,
             stopLoss, takeProfit, confirmedSize,
             reason, pricePct * 100, pnlU));
         
@@ -310,28 +373,35 @@ public class MeanReversionBacktestEngine {
         probeEntryTime = 0;
         probeSize = 0;
         confirmedEntryPrice = 0;
+        confirmedEntryTime = 0;
         confirmedSize = 0;
         stopLoss = 0;
         takeProfit = 0;
     }
     
-    private List<KLine> aggregate4h(List<KLine> klines15m, int currentIndex) {
-        int barsPerCandle = 16;
-        int maxCandles = 100;
+    /**
+     * 从15分钟K线聚合为4小时K线（只用历史数据，避免未来函数）
+     * 
+     * @param klines15m 15分钟K线列表（只包含当前时间点之前的数据）
+     * @return 4小时K线列表
+     */
+    private List<KLine> aggregate4hFromList(List<KLine> klines15m) {
+        int barsPerCandle = 16;  // 4小时 = 16 * 15分钟
+        int maxCandles = 100;    // 最多保留100根4h K线
         List<KLine> result = new ArrayList<>();
         
-        int end = currentIndex + 1;
-        int start = Math.max(0, end - maxCandles * barsPerCandle);
+        int totalBars = klines15m.size();
+        int start = Math.max(0, totalBars - maxCandles * barsPerCandle);
         
-        for (int i = start; i + barsPerCandle <= end; i += barsPerCandle) {
+        for (int i = start; i + barsPerCandle <= totalBars; i += barsPerCandle) {
             long ts = klines15m.get(i).getTimestamp();
             double open = klines15m.get(i).getOpen();
             double high = Double.MIN_VALUE;
             double low = Double.MAX_VALUE;
             double vol = 0;
-            double close = klines15m.get(Math.min(i + barsPerCandle - 1, end - 1)).getClose();
+            double close = klines15m.get(i + barsPerCandle - 1).getClose();
             
-            for (int j = i; j < i + barsPerCandle && j < end; j++) {
+            for (int j = i; j < i + barsPerCandle; j++) {
                 KLine k = klines15m.get(j);
                 high = Math.max(high, k.getHigh());
                 low = Math.min(low, k.getLow());

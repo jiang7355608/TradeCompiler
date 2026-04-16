@@ -134,9 +134,12 @@ public class TradingProperties {
         private double mrTrendStrengthLimit = 0.002;  // 趋势强度上限
         private long   mrProbeTimeoutMs     = 10800000; // 试探仓超时3小时
         private long   mrConfirmedTimeoutMs = 21600000; // CONFIRMED 超时兜底（6小时）
-        private double mrEntryBuffer        = 500;    // 接近边沿的缓冲区（美元）
+        private double mrEntryBufferPct     = 0.10;    // 接近边沿的缓冲区（箱体宽度的百分比）
         private double mrRangeHigh          = 0;      // 手动箱体上沿（0=使用动态箱体）
         private double mrRangeLow           = 0;      // 手动箱体下沿（0=使用动态箱体）
+        private double boxMaxWidth          = 12000;  // 箱体最大宽度（美元）
+        private double boxMinWidth          = 1000;   // 箱体最小宽度（美元）
+        private double accountBalance       = 0;      // 账户余额（0=使用默认值200U）
 
         public int    getRangeWindow()              { return rangeWindow; }
         public void   setRangeWindow(int v)         { this.rangeWindow = v; }
@@ -212,12 +215,18 @@ public class TradingProperties {
         public void   setMrProbeTimeoutMs(long v)    { this.mrProbeTimeoutMs = v; }
         public long   getMrConfirmedTimeoutMs()      { return mrConfirmedTimeoutMs; }
         public void   setMrConfirmedTimeoutMs(long v){ this.mrConfirmedTimeoutMs = v; }
-        public double getMrEntryBuffer()            { return mrEntryBuffer; }
-        public void   setMrEntryBuffer(double v)    { this.mrEntryBuffer = v; }
+        public double getMrEntryBufferPct()         { return mrEntryBufferPct; }
+        public void   setMrEntryBufferPct(double v) { this.mrEntryBufferPct = v; }
         public double getMrRangeHigh()              { return mrRangeHigh; }
         public void   setMrRangeHigh(double v)      { this.mrRangeHigh = v; }
         public double getMrRangeLow()               { return mrRangeLow; }
         public void   setMrRangeLow(double v)       { this.mrRangeLow = v; }
+        public double getBoxMaxWidth()              { return boxMaxWidth; }
+        public void   setBoxMaxWidth(double v)      { this.boxMaxWidth = v; }
+        public double getBoxMinWidth()              { return boxMinWidth; }
+        public void   setBoxMinWidth(double v)      { this.boxMinWidth = v; }
+        public double getAccountBalance()           { return accountBalance; }
+        public void   setAccountBalance(double v)   { this.accountBalance = v; }
     }
 
     // ── 回测配置 ──────────────────────────────────────────────────────────

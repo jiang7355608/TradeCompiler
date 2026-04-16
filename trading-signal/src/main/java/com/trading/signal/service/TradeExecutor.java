@@ -49,6 +49,13 @@ public class TradeExecutor {
         this.properties  = properties;
         this.emailService = emailService;
     }
+    
+    /**
+     * 获取 OkxTradeClient 实例（用于其他服务获取余额等信息）
+     */
+    public OkxTradeClient getOkxTradeClient() {
+        return tradeClient;
+    }
 
     // NEW: 程序启动后自动执行，从交易所读取当前余额作为初始基准
     // 如果查询失败（网络/API问题），initialBalance=0，熔断不会误触发

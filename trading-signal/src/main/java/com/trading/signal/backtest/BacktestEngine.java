@@ -254,9 +254,7 @@ public class BacktestEngine {
                     boolean isProbeState = false;
                     boolean isIdle = false;
                     if (isAgg) {
-                        AggressiveStrategy a = (AggressiveStrategy) strategy;
-                        isConfirmed = a.getState() == AggressiveStrategy.State.CONFIRMED;
-                        isIdle = a.getState() == AggressiveStrategy.State.IDLE;
+                    //有专用引擎
                     } else if (isMr) {
                         MeanReversionStrategy m = (MeanReversionStrategy) strategy;
                         isConfirmed = m.getState() == MeanReversionStrategy.State.CONFIRMED;
