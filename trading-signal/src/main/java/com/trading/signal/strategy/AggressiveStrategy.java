@@ -152,9 +152,13 @@ public class AggressiveStrategy implements Strategy {
 
         KLine last = data.getLastKline();
         
+        // 计算K线实体大小
+        double bodySize = Math.abs(last.getClose() - last.getOpen());
+        
         // ── 3. 做多突破检测 ────────────────────────────────────────────
         boolean longBreakout = last.getClose() > rangeHigh 
-                            && (last.getClose() - rangeHigh) > atr * 0.3;
+                            && (last.getClose() - rangeHigh) > atr * 0.3
+                            && bodySize > atr * 0.8;  // 新增：实体过滤
         
         if (longBreakout) {
             // 检查做多方向是否被暂停
@@ -177,7 +181,7 @@ public class AggressiveStrategy implements Strategy {
             double takeProfit = 0;  // 不使用固定止盈
             
             // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
-            double riskPerTrade = 0.02;
+            double riskPerTrade = 0.03;  // 单笔风险 3%（从 2% 提升）
             double riskAmount = accountBalance * riskPerTrade;
             int leverage = 20;
             
@@ -222,7 +226,8 @@ public class AggressiveStrategy implements Strategy {
         
         // ── 4. 做空突破检测 ────────────────────────────────────────────
         boolean shortBreakout = last.getClose() < rangeLow
-                             && (rangeLow - last.getClose()) > atr * 0.3;
+                             && (rangeLow - last.getClose()) > atr * 0.3
+                             && bodySize > atr * 0.8;  // 新增：实体过滤
         
         if (shortBreakout) {
             // 检查做空方向是否被暂停
@@ -245,7 +250,7 @@ public class AggressiveStrategy implements Strategy {
             double takeProfit = 0;  // 不使用固定止盈
             
             // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
-            double riskPerTrade = 0.02;
+            double riskPerTrade = 0.03;  // 单笔风险 3%（从 2% 提升）
             double riskAmount = accountBalance * riskPerTrade;
             int leverage = 20;
             

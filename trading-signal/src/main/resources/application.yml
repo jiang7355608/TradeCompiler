@@ -1,6 +1,6 @@
 trading:
   # 当前激活的策略：aggressive | conservative|mean-reversion
-  strategy: mean-reversion
+  strategy: aggressive
 
   okx:
     inst-id: BTC-USDT       # 交易对
@@ -19,7 +19,7 @@ trading:
 
   # ── 代理配置（本地测试时开启，生产环境关闭）──────────────────────────
   proxy:
-    enabled: true
+    enabled: false
     host: 127.0.0.1
     port: 7897
 
@@ -36,7 +36,7 @@ trading:
   email:
     enabled: true                       # 改为 true 开启邮件通知
     sender-email: jiangyuxuan7355608@gmail.com    # Gmail 发件地址
-    app-password: xx      # Gmail 应用专用密码（非登录密码）
+    app-password:      # Gmail 应用专用密码（非登录密码）
     receiver-email: jiangyuxuan7355608@gmail.com   # 收件地址
     cooldown-ms: 300000                   # 同方向信号冷却时间（毫秒），默认5分钟
 
@@ -251,8 +251,12 @@ trading:
     # 21600000 = 6小时
     mr-confirmed-timeout-ms: 21600000
 
-    # 接近上下沿的缓冲区（美元），价格进入此范围开始寻找入场信号
-    mr-entry-buffer: 500
+    # 接近上下沿的缓冲区（箱体宽度的百分比）
+    # 0.10 = 箱体宽度的10%
+    # 例如：箱体1000美元，缓冲区100美元；箱体10000美元，缓冲区1000美元
+    # 价格进入此范围开始寻找入场信号
+    # 建议范围：0.05~0.20，默认0.10
+    mr-entry-buffer-pct: 0.10
 
     # ── 手动箱体配置 ──────────────────────────────────────────────────
     # 手动指定箱体上下沿（美元），优先级高于动态箱体
@@ -266,21 +270,19 @@ trading:
     # 示例（BTC）：
     #   mr-range-high: 72000  # 箱体上沿
     #   mr-range-low: 68000   # 箱体下沿
-    mr-range-high: 74000
-    mr-range-low: 66000
+    mr-range-high: 0
+    mr-range-low: 0
 
-    # ── 动态箱体说明（当手动箱体为0时生效）────────────────────────────
-    # 均值回归策略使用 4 小时 K 线动态分析箱体（不再使用人工配置）
-    # 箱体计算逻辑：
-    #   1. 取最近 rangeWindow 根 4h K线（默认6根 = 24小时）
-    #   2. 计算这些K线的最高价和最低价作为箱体上下沿
-    #   3. 如果 (maxHigh - minLow) / minLow < rangeThreshold × 12，判定为箱体震荡
-    #   4. 箱体每15分钟更新一次（跟随策略调度周期）
-    # 
-    # 优势：
-    #   - 自动适应市场变化，无需人工调整
-    #   - 箱体失效时自动停止交易（isRange=false）
-    #   - 避免在趋势行情中逆势开仓
+    # ── 自动箱体识别配置 ──────────────────────────────────────────────
+    # 箱体最大宽度（美元），超过此值说明震荡过于剧烈
+    # 12000 = BTC在12000美元范围内震荡才算有效箱体
+    # 建议范围：8000~15000，默认12000
+    box-max-width: 12000
+    
+    # 箱体最小宽度（美元），低于此值操作空间不足
+    # 1000 = 至少1000美元的操作空间
+    # 建议范围：500~2000，默认1000
+    box-min-width: 1000
 
   # ── 回测配置 ──────────────────────────────────────────────────────────
   backtest:
@@ -299,7 +301,7 @@ spring:
     name: trading-signal-engine
 
 server:
-  port: 8080
+  port: 10086
 
 logging:
   level:
