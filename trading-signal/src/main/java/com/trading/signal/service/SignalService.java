@@ -55,6 +55,12 @@ public class SignalService {
      */
     @Scheduled(cron = "10 0/15 * * * *")
     public void run() {
+        // 检查策略是否启用
+        if (!properties.getTradeApi().isEnabled()) {
+            log.info("⏸️  策略已停止，跳过本轮分析");
+            return;
+        }
+        
         TradingProperties.Okx okxCfg = properties.getOkx();
         log.info("── 开始新一轮分析 instId={} bar={} limit={}",
                 okxCfg.getInstId(), okxCfg.getTimeframe(), okxCfg.getLimit());
@@ -182,6 +188,11 @@ public class SignalService {
      */
     @Scheduled(cron = "0 * * * * *")  // 每分钟整点执行
     public void monitorStopLoss() {
+        // 检查策略是否启用
+        if (!properties.getTradeApi().isEnabled()) {
+            return;
+        }
+        
         Strategy strategy = strategyRouter.current();
         
         // 只有均值回归策略需要止损监控

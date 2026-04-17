@@ -19,7 +19,7 @@ public class ControlController {
     private static final Logger log = LoggerFactory.getLogger(ControlController.class);
     
     // 秘钥（硬编码，简单安全）
-    private static final String SECRET_TOKEN = "xxx";
+    private static final String SECRET_TOKEN = "jiangyuxuanGGbond339@!";
     
     private final TradingProperties properties;
     

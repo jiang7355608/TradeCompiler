@@ -158,7 +158,7 @@ public class AggressiveStrategy implements Strategy {
         // ── 3. 做多突破检测 ────────────────────────────────────────────
         boolean longBreakout = last.getClose() > rangeHigh 
                             && (last.getClose() - rangeHigh) > atr * 0.3
-                            && bodySize > atr * 0.8;  // 新增：实体过滤
+                            && bodySize > atr * 0.8;  // 实体过滤：减少假突破
         
         if (longBreakout) {
             // 检查做多方向是否被暂停
@@ -227,7 +227,7 @@ public class AggressiveStrategy implements Strategy {
         // ── 4. 做空突破检测 ────────────────────────────────────────────
         boolean shortBreakout = last.getClose() < rangeLow
                              && (rangeLow - last.getClose()) > atr * 0.3
-                             && bodySize > atr * 0.8;  // 新增：实体过滤
+                             && bodySize > atr * 0.8;  // 实体过滤：减少假突破
         
         if (shortBreakout) {
             // 检查做空方向是否被暂停

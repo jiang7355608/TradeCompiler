@@ -1,8 +1,10 @@
 package com.trading.signal.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.trading.signal.client.OkxClient;
 import com.trading.signal.client.OkxTradeClient;
 import com.trading.signal.config.TradingProperties;
+import com.trading.signal.model.KLine;
 import com.trading.signal.model.TradeSignal;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -12,6 +14,7 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * 交易执行器：将策略信号转化为 OKX 下单操作
@@ -34,6 +37,8 @@ public class TradeExecutor {
     private final OkxTradeClient tradeClient;
     private final TradingProperties properties;
     private final EmailService emailService;
+    private final TrailingStopMonitor trailingStopMonitor;
+    private final OkxClient okxClient;
     private boolean leverageSet = false;
 
     // NEW: 账户级永久熔断（Equity Kill Switch）
@@ -44,10 +49,13 @@ public class TradeExecutor {
     private static final double KILL_THRESHOLD = 0.60; // 跌至初始资金60%触发
 
     public TradeExecutor(OkxTradeClient tradeClient, TradingProperties properties,
-                         EmailService emailService) {
+                         EmailService emailService, TrailingStopMonitor trailingStopMonitor,
+                         OkxClient okxClient) {
         this.tradeClient = tradeClient;
         this.properties  = properties;
         this.emailService = emailService;
+        this.trailingStopMonitor = trailingStopMonitor;
+        this.okxClient = okxClient;
     }
     
     /**
@@ -136,6 +144,7 @@ public class TradeExecutor {
 
             boolean isProbe = reason.contains("PROBE") && !reason.contains("ADD");
             boolean isAdd   = reason.contains("ADD");
+            boolean isBreakout = reason.contains("BREAKOUT");  // AggressiveStrategy 信号
 
             // 查询交易所实际持仓
             double currentPos = queryPositionSize();
@@ -145,6 +154,34 @@ public class TradeExecutor {
             }
             boolean hasPosition = currentPos != 0;
 
+            // ── BREAKOUT 信号：交易所必须无持仓 ────────────────────────────
+            if (isBreakout) {
+                if (hasPosition) {
+                    log.warn("交易所已有持仓({}张)，拒绝 BREAKOUT 开仓", currentPos);
+                    return false;
+                }
+                boolean ok = openPosition(signal, currentPrice, cfg);
+                if (ok) {
+                    sendBreakoutEmail(signal, currentPrice);
+                    // 启动 Trailing Stop 监控
+                    try {
+                        double atr = calculateATR();
+                        String direction = signal.getAction() == TradeSignal.Action.LONG ? "long" : "short";
+                        trailingStopMonitor.onPositionOpened(
+                            direction, 
+                            currentPrice, 
+                            signal.getStopLoss(), 
+                            atr
+                        );
+                        log.info("Trailing Stop 监控已启动: direction={} entry={} SL={} ATR={}", 
+                            direction, currentPrice, signal.getStopLoss(), atr);
+                    } catch (Exception e) {
+                        log.error("启动 Trailing Stop 监控失败: {}", e.getMessage());
+                    }
+                }
+                return ok;
+            }
+
             // ── 试探仓：交易所必须无持仓 ────────────────────────────────
             if (isProbe) {
                 if (hasPosition) {
@@ -152,7 +189,9 @@ public class TradeExecutor {
                     return false;
                 }
                 boolean ok = openPosition(signal, currentPrice, cfg);
-                if (ok) sendProbeEmail(signal, currentPrice);
+                if (ok) {
+                    sendProbeEmail(signal, currentPrice);
+                }
                 return ok;
             }
 
@@ -201,6 +240,8 @@ public class TradeExecutor {
             if (ok) {
                 log.info("试探仓平仓成功");
                 sendTradeEmail("平试探仓成功", null, 0);
+                // 停止 Trailing Stop 监控
+                trailingStopMonitor.onPositionClosed();
             } else {
                 log.error("平仓API调用失败: {}", result.toString());
             }
@@ -380,6 +421,43 @@ public class TradeExecutor {
     }
 
     /**
+     * 发送 BREAKOUT 开仓邮件（使用 Trailing Stop）
+     */
+    private void sendBreakoutEmail(TradeSignal signal, double price) {
+        TradingProperties.Email emailCfg = properties.getEmail();
+        if (!emailCfg.isEnabled()) return;
+
+        String subject = String.format("[突破开仓] %s", properties.getOkx().getInstId().toUpperCase());
+        String body = String.format(
+            "===== 突破开仓成功 =====\n\n" +
+            "方向    : %s\n" +
+            "价格    : %.2f\n" +
+            "仓位    : %.0f%% (实际 %.1f%%)\n" +
+            "初始止损: %.2f\n" +
+            "止盈    : Trailing Stop (ATR × 2.5)\n" +
+            "模式    : %s\n\n" +
+            "【说明】\n" +
+            "使用 Trailing Stop 策略：\n" +
+            "- 每1分钟更新 trailing stop\n" +
+            "- 止损线只能向有利方向移动\n" +
+            "- 距离当前价格 ATR × 2.5\n" +
+            "- 目标：持有趋势，获取大额利润\n\n" +
+            "========================",
+            signal.getAction().getValue().toUpperCase(),
+            price,
+            signal.getPositionSize() * 100,
+            signal.getPositionSize() * signal.getConfidence() * 100,
+            signal.getStopLoss(),
+            properties.getTradeApi().isSimulated() ? "模拟盘" : "实盘");
+
+        try {
+            emailService.sendRawEmail(subject, body);
+        } catch (Exception e) {
+            log.error("突破开仓邮件发送失败: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 发送加仓邮件（带整仓止盈止损）
      */
     private void sendAddEmail(TradeSignal signal, double price) {
@@ -413,5 +491,34 @@ public class TradeExecutor {
         } catch (Exception e) {
             log.error("加仓邮件发送失败: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 计算当前 ATR（用于 Trailing Stop）
+     * 使用最近 14 根 K 线计算 ATR
+     */
+    private double calculateATR() throws Exception {
+        TradingProperties.Okx okxCfg = properties.getOkx();
+        List<KLine> klines = okxClient.fetchCandles(okxCfg.getInstId(), okxCfg.getTimeframe(), 15);
+        
+        if (klines.size() < 2) {
+            throw new IllegalStateException("K线数据不足，无法计算ATR");
+        }
+        
+        double sum = 0;
+        for (int i = 1; i < klines.size(); i++) {
+            KLine curr = klines.get(i);
+            KLine prev = klines.get(i - 1);
+            double tr = Math.max(
+                curr.getHigh() - curr.getLow(),
+                Math.max(
+                    Math.abs(curr.getHigh() - prev.getClose()),
+                    Math.abs(curr.getLow() - prev.getClose())
+                )
+            );
+            sum += tr;
+        }
+        
+        return sum / (klines.size() - 1);
     }
 }
