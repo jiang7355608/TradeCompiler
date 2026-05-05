@@ -27,7 +27,7 @@ import java.util.List;
  * rangeLow = 最低价
  * 
  * 过滤条件：
- * - 区间宽度 > 3%（过滤无波动市场）
+ * - 区间宽度 > 1.5%（过滤无波动市场）
  * 
  * ═══════════════════════════════════════════════════════════════════════
  * 【2】突破入场
@@ -141,10 +141,10 @@ public class AggressiveStrategy implements Strategy {
             rangeLow = Math.min(rangeLow, k.getLow());
         }
         
-        // ── 2. 过滤：区间宽度 > 3% ────────────────────────────────────
+        // ── 2. 过滤：区间宽度 > 1.5% ────────────────────────────────────
         double rangeWidth = (rangeHigh - rangeLow) / rangeLow;
-        if (rangeWidth < 0.03) {
-            return noTrade(String.format("Range too narrow: %.2f%% < 3%% (range: %.0f-%.0f)", 
+        if (rangeWidth < 0.015) {
+            return noTrade(String.format("Range too narrow: %.2f%% < 1.5%% (range: %.0f-%.0f)", 
                 rangeWidth * 100, rangeLow, rangeHigh));
         }
 
