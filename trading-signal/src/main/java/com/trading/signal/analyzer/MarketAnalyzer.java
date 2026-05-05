@@ -51,7 +51,8 @@ public class MarketAnalyzer {
         // 计算 ATR（14周期）
         double atr = calculateAtr(klines, 14);
         
-        log.debug("技术指标计算完成: ATR={:.2f}, K线数量={}", atr, klines.size());
+        log.debug("技术指标计算完成: ATR={}, K线数量={}", 
+            String.format("%.2f", atr), klines.size());
         
         return new MarketData(klines, atr);
     }

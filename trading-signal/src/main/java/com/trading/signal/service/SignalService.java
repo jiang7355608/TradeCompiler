@@ -120,8 +120,9 @@ public class SignalService {
             // Step 2: 计算技术指标
             MarketData marketData = analyzer.analyze(klines);
             
-            log.debug("技术指标计算完成: ATR={:.2f}, 当前价格={:.2f}", 
-                marketData.getAtr(), marketData.getCurrentPrice());
+            log.debug("技术指标计算完成: ATR={}, 当前价格={}", 
+                String.format("%.2f", marketData.getAtr()), 
+                String.format("%.2f", marketData.getCurrentPrice()));
 
             // Step 3: 获取策略并更新账户余额
             Strategy strategy = strategyRouter.current();
@@ -136,10 +137,10 @@ public class SignalService {
             // Step 4: 策略分析决策
             TradeSignal tradeSignal = strategy.generateSignal(marketData);
             
-            log.info("策略决策完成: 策略={} 信号={} 置信度={:.2f} 原因={}",
+            log.info("策略决策完成: 策略={} 信号={} 置信度={} 原因={}",
                 strategy.getName(),
                 tradeSignal.getAction().getValue(),
-                tradeSignal.getConfidence(),
+                String.format("%.2f", tradeSignal.getConfidence()),
                 tradeSignal.getReason());
 
             // Step 5: 写入信号文件
