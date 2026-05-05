@@ -164,41 +164,70 @@ public class AggressiveStrategy implements Strategy {
                 return noTrade(String.format("LONG direction paused (2 consecutive fails, wait 1h)"));
             }
             
-            // 修复1：入场价格必须使用 last.getClose()，与信号判断一致
-            double entryPrice = last.getClose();
-            double stopLoss = rangeHigh - atr * 1.0;
+            // ═══════════════════════════════════════════════════════════════
+            // 仓位计算（基于固定风险模型）
+            // ═══════════════════════════════════════════════════════════════
             
-            // 修复3：止损距离保护
-            double slDist = entryPrice - stopLoss;
+            // ── Step 1: 入场价格和止损 ────────────────────────────────────
+            double entryPrice = last.getClose();           // 入场 = 当前K线收盘价
+            double stopLoss = rangeHigh - atr * 1.0;       // 止损 = 区间上沿 - 1×ATR
+            
+            double slDist = entryPrice - stopLoss;         // 止损距离（美元）
             if (slDist <= 0) {
                 return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
             }
             
-            // v8 修改：删除固定止盈，使用 trailing stop
-            // double takeProfit = entryPrice + slDist * 2.0;
-            double takeProfit = 0;  // 不使用固定止盈
+            double takeProfit = 0;  // v8: 不使用固定止盈，改为 trailing stop
             
-            // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
-            double riskPerTrade = 0.03;  // 单笔风险 3%（从 2% 提升）
-            double riskAmount = accountBalance * riskPerTrade;
-            int leverage = 20;
+            // ── Step 2: 风险参数定义 ──────────────────────────────────────
+            double riskPerTrade = 0.03;                    // 单笔最大亏损：账户资金的 3%
+            double riskAmount = accountBalance * riskPerTrade;  // 风险金额（美元）
+            int leverage = 20;                             // 杠杆倍数
             
-            double priceRiskRatio = slDist / entryPrice;
+            // 例：账户 200U，riskPerTrade=3% → riskAmount = 6U
+            //    意思是：这笔交易最多允许亏损 6U
+            
+            // ── Step 3: 计算理想仓位（满足风险需求）──────────────────────
+            double priceRiskRatio = slDist / entryPrice;   // 价格风险比（百分比）
+            // 例：entryPrice=80000, slDist=800 → priceRiskRatio = 1%
+            
             if (priceRiskRatio < 0.002) {
                 return noTrade(String.format("Stop loss too tight (%.3f%% < 0.2%%)", priceRiskRatio * 100));
             }
             
+            // 仓位计算核心公式：
+            // positionNotional = riskAmount / priceRiskRatio
+            // 
+            // 推导：假设止损被触发，亏损为：
+            //   loss = positionNotional × priceRiskRatio
+            // 要求 loss = riskAmount，所以：
+            //   positionNotional = riskAmount / priceRiskRatio
+            //
+            // 例：riskAmount=6U, priceRiskRatio=1% 
+            //   → positionNotional = 6 / 0.01 = 600U（名义价值）
             double positionNotional = riskAmount / priceRiskRatio;
+            
+            // 保证金 = 名义价值 / 杠杆
+            // 例：positionNotional=600U, leverage=20 → margin = 30U
             double margin = positionNotional / leverage;
-            double maxMargin = accountBalance * 0.30;
+            
+            // ── Step 4: 最大仓位限制（账户资金的 30%）──────────────────
+            double maxMargin = accountBalance * 0.30;      // 最大保证金（美元）
+            // 例：accountBalance=200U → maxMargin = 60U
             
             if (margin > maxMargin) {
+                // 如果理想保证金超过限制，则削减到最大值
                 margin = maxMargin;
-                positionNotional = margin * leverage;
+                positionNotional = margin * leverage;      // 反推名义价值
+                // 注意：此时实际风险会小于 riskAmount（更保守）
             }
             
-            double position = margin / accountBalance;
-            double actualRisk = positionNotional * priceRiskRatio;
+            // ── Step 5: 计算最终仓位比例和实际风险 ────────────────────────
+            double position = margin / accountBalance;     // 仓位比例（0-1）
+            // 例：margin=30U, accountBalance=200U → position = 15%
+            
+            double actualRisk = positionNotional * priceRiskRatio;  // 实际风险金额
+            // 校验：actualRisk 应该 ≈ riskAmount（允许因限制而更小）
             
             // 修复5：风险校验（允许10%误差）
             if (actualRisk > riskAmount * 1.1) {
@@ -233,22 +262,23 @@ public class AggressiveStrategy implements Strategy {
                 return noTrade(String.format("SHORT direction paused (2 consecutive fails, wait 1h)"));
             }
             
-            // 修复1：入场价格必须使用 last.getClose()，与信号判断一致
-            double entryPrice = last.getClose();
-            double stopLoss = rangeLow + atr * 1.0;
+            // ═══════════════════════════════════════════════════════════════
+            // 仓位计算（基于固定风险模型，与做多对称）
+            // ═══════════════════════════════════════════════════════════════
             
-            // 修复3：止损距离保护
-            double slDist = stopLoss - entryPrice;
+            // ── Step 1: 入场价格和止损 ────────────────────────────────────
+            double entryPrice = last.getClose();           // 入场 = 当前K线收盘价
+            double stopLoss = rangeLow + atr * 1.0;        // 止损 = 区间下沿 + 1×ATR
+            
+            double slDist = stopLoss - entryPrice;         // 止损距离（美元，做空为正值）
             if (slDist <= 0) {
                 return noTrade(String.format("Invalid SL distance (%.2f <= 0)", slDist));
             }
             
-            // v8 修改：删除固定止盈，使用 trailing stop
-            // double takeProfit = entryPrice - slDist * 2.0;
-            double takeProfit = 0;  // 不使用固定止盈
+            double takeProfit = 0;  // v8: 不使用固定止盈，改为 trailing stop
             
-            // 修复2：使用实例变量 accountBalance（实盘从交易所获取，回测使用固定值）
-            double riskPerTrade = 0.03;  // 单笔风险 3%（从 2% 提升）
+            // ── Step 2-5: 仓位计算（逻辑与做多完全相同）────────────────
+            double riskPerTrade = 0.03;
             double riskAmount = accountBalance * riskPerTrade;
             int leverage = 20;
             
