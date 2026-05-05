@@ -1,17 +1,13 @@
 package com.trading.signal.controller;
 
-import com.trading.signal.backtest.BacktestEngine;
-import com.trading.signal.backtest.MeanReversionBacktestEngine;
+import com.trading.signal.backtest.AggressiveBacktestEngine;
 import com.trading.signal.backtest.BacktestResult;
 import com.trading.signal.backtest.BacktestScheduler;
-import com.trading.signal.backtest.ParameterOptimizer;
 import com.trading.signal.config.TradingProperties;
-import com.trading.signal.model.KLine;
 import com.trading.signal.model.TradeSignal;
 import com.trading.signal.service.EmailService;
 import com.trading.signal.service.SignalService;
-import com.trading.signal.strategy.MeanReversionStrategy;
-import com.trading.signal.strategy.Strategy;
+import com.trading.signal.strategy.AggressiveStrategy;
 import com.trading.signal.strategy.StrategyRouter;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -19,77 +15,68 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
- * REST 接口
+ * REST 接口 - 简化版
  *
  * GET  /api/signal/run       手动触发一次分析，返回最新信号
- * GET  /api/strategy         查询当前策略及所有可用策略
- * POST /api/strategy/{name}  热切换策略（无需重启）
- * POST /api/backtest/run     手动触发月度回测（不等每月1号）
+ * GET  /api/strategy         查询当前策略
+ * POST /api/backtest/run     手动触发月度回测
+ * GET  /api/backtest/range   分段回测（指定时间范围）
  */
 @RestController
 @RequestMapping("/api")
 public class SignalController {
 
-    private final SignalService      signalService;
-    private final StrategyRouter     strategyRouter;
-    private final BacktestScheduler  backtestScheduler;
-    private final ParameterOptimizer parameterOptimizer;
-    private final TradingProperties  properties;
-    private final EmailService       emailService;
-
+    private final SignalService signalService;
+    private final StrategyRouter strategyRouter;
+    private final BacktestScheduler backtestScheduler;
+    private final TradingProperties properties;
+    private final EmailService emailService;
 
     public SignalController(SignalService signalService, StrategyRouter strategyRouter,
                             BacktestScheduler backtestScheduler,
-                            ParameterOptimizer parameterOptimizer,
                             TradingProperties properties,
                             EmailService emailService) {
-        this.signalService      = signalService;
-        this.strategyRouter     = strategyRouter;
-        this.backtestScheduler  = backtestScheduler;
-        this.parameterOptimizer = parameterOptimizer;
-        this.properties         = properties;
-        this.emailService       = emailService;
+        this.signalService = signalService;
+        this.strategyRouter = strategyRouter;
+        this.backtestScheduler = backtestScheduler;
+        this.properties = properties;
+        this.emailService = emailService;
     }
 
+    /**
+     * 手动触发一次信号生成
+     */
     @GetMapping("/signal/run")
     public ResponseEntity<?> runOnce() {
         try {
             TradeSignal signal = signalService.runOnce();
             return ResponseEntity.ok(Map.of(
-                "action",     signal.getAction().getValue(),
+                "action", signal.getAction().getValue(),
                 "confidence", signal.getConfidence(),
-                "reason",     signal.getReason()
+                "reason", signal.getReason()
             ));
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
 
+    /**
+     * 查询当前策略
+     */
     @GetMapping("/strategy")
     public ResponseEntity<?> getStrategy() {
         return ResponseEntity.ok(Map.of(
-            "current",   strategyRouter.current().getName(),
-            "available", strategyRouter.availableStrategies()
+            "current", strategyRouter.getCurrentStrategyName(),
+            "supported", strategyRouter.getSupportedStrategies()
         ));
     }
 
-    @PostMapping("/strategy/{name}")
-    public ResponseEntity<?> switchStrategy(@PathVariable String name) {
-        try {
-            strategyRouter.switchStrategy(name);
-            return ResponseEntity.ok(Map.of("message", "策略已切换为: " + name, "current", name));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    /** 手动触发月度回测，异步执行，立即返回 */
+    /**
+     * 手动触发月度回测，异步执行，立即返回
+     */
     @PostMapping("/backtest/run")
     public ResponseEntity<?> triggerBacktest() {
         new Thread(() -> backtestScheduler.runBacktest()).start();
@@ -99,36 +86,19 @@ public class SignalController {
     }
 
     /**
-     * 参数优化：网格搜索最优参数组合
-     * GET /api/optimize?top=5
-     * 返回两个策略各自的 Top N 参数组合及评分
-     */
-    @GetMapping("/optimize")
-    public ResponseEntity<?> optimizeParams(@RequestParam(defaultValue = "5") int top) {
-        try {
-            Map<String, Object> result = parameterOptimizer.optimize(top);
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
-        }
-    }
-
-    /**
-     * 分段回测：指定时间范围和策略
-     * GET /api/backtest/range?start=2026-03-01&end=2026-03-31&strategy=mean-reversion
+     * 分段回测：指定时间范围
+     * GET /api/backtest/range?start=2026-03-01&end=2026-03-31
      *
      * start/end 格式：yyyy-MM-dd
-     * strategy 可选：aggressive / conservative / mean-reversion（默认当前策略）
      */
     @GetMapping("/backtest/range")
     public ResponseEntity<?> backtestRange(
             @RequestParam String start,
-            @RequestParam String end,
-            @RequestParam(required = false) String strategy) {
+            @RequestParam String end) {
         // 异步执行，立即返回
         new Thread(() -> {
             try {
-                runRangeBacktest(start, end, strategy);
+                runRangeBacktest(start, end);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -137,42 +107,27 @@ public class SignalController {
             "message", String.format("分段回测已启动 (%s → %s)，完成后发送邮件", start, end)));
     }
 
-    private void runRangeBacktest(String start, String end, String strategy) throws Exception {
+    private void runRangeBacktest(String start, String end) throws Exception {
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd");
         LocalDate startDate = LocalDate.parse(start, fmt);
-        LocalDate endDate   = LocalDate.parse(end, fmt);
+        LocalDate endDate = LocalDate.parse(end, fmt);
         long startMs = startDate.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
-        long endMs   = endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
+        long endMs = endDate.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
 
         String csvFile = ensureCsvData(startDate, endDate, startMs, endMs);
-        
-        String strategyName = strategy != null ? strategy : properties.getStrategy();
-        Strategy strat = strategyRouter.getStrategy(strategyName);
-        
-        // 根据策略类型选择回测引擎
-        BacktestResult result;
-        if ("mean-reversion".equals(strategyName)) {
-            // 均值回归策略使用专用引擎
-            MeanReversionBacktestEngine mrEngine = new MeanReversionBacktestEngine(properties);
-            List<KLine> allKlines = mrEngine.loadCsv(csvFile);
-            result = mrEngine.run(allKlines, (MeanReversionStrategy) strat);
-        } else if ("aggressive".equals(strategyName)) {
-            // 激进策略使用专用引擎
-            com.trading.signal.backtest.AggressiveBacktestEngine aggEngine = 
-                new com.trading.signal.backtest.AggressiveBacktestEngine(properties);
-            List<KLine> allKlines = aggEngine.loadCsv(csvFile);
-            result = aggEngine.run(allKlines, (com.trading.signal.strategy.AggressiveStrategy) strat);
-        } else {
-            // 其他策略使用通用引擎
-            BacktestEngine engine = new BacktestEngine(properties);
-            List<KLine> allKlines = engine.loadCsv(csvFile);
-            result = engine.run(allKlines, strat, startMs, endMs);
-        }
+
+        // 使用 AggressiveBacktestEngine
+        AggressiveBacktestEngine engine = new AggressiveBacktestEngine();
+        AggressiveStrategy strategy = new AggressiveStrategy(properties.getBacktest().getInitialCapital());
+
+        BacktestResult result = engine.run(csvFile, strategy,
+            properties.getBacktest().getInitialCapital(),
+            properties.getBacktest().getLeverage());
 
         // 构建邮件
         StringBuilder body = new StringBuilder();
         body.append(String.format("分段回测报告: %s → %s\n", start, end));
-        body.append(String.format("策略: %s\n", strategyName));
+        body.append(String.format("策略: AggressiveStrategy\n"));
         body.append(String.format("数据: %s\n\n", csvFile));
 
         // 汇总统计
@@ -180,11 +135,11 @@ public class SignalController {
         if (total == 0) {
             body.append("本期无交易信号产生\n");
         } else {
-            double winRate  = (double) result.getWins() / total * 100;
+            double winRate = (double) result.getWins() / total * 100;
             double totalPnl = result.getCurrentCapital() - result.getInitialCapital();
-            double avgWin   = result.getWins() > 0
+            double avgWin = result.getWins() > 0
                 ? result.getTrades().stream().filter(t -> t.pnlU > 0).mapToDouble(t -> t.pnlU).average().orElse(0) : 0;
-            double avgLoss  = result.getLosses() > 0
+            double avgLoss = result.getLosses() > 0
                 ? result.getTrades().stream().filter(t -> t.pnlU <= 0).mapToDouble(t -> Math.abs(t.pnlU)).average().orElse(0) : 0;
             long slCount = result.getTrades().stream().filter(t -> "sl".equals(t.exitReason)).count();
             long tpCount = result.getTrades().stream().filter(t -> "tp".equals(t.exitReason)).count();
@@ -213,7 +168,7 @@ public class SignalController {
                     t.positionSize * 100, t.exitReason.toUpperCase(), t.pnlU));
             }
 
-            // 拒绝原因统计（排查为什么不触发某方向信号）
+            // 拒绝原因统计
             if (!result.getRejectReasons().isEmpty()) {
                 body.append("\n═══ 信号拒绝原因统计（Top 15）═══════════════\n");
                 result.getRejectReasons().entrySet().stream()
@@ -223,10 +178,10 @@ public class SignalController {
             }
         }
 
-        // 发邮件（复用 EmailService）
+        // 发邮件
         TradingProperties.Email emailCfg = properties.getEmail();
         if (emailCfg.isEnabled()) {
-            String subject = String.format("[分段回测] %s %s→%s", strategyName.toUpperCase(), start, end);
+            String subject = String.format("[分段回测] AggressiveStrategy %s→%s", start, end);
             emailService.sendRawEmail(subject, body.toString());
         }
     }
@@ -256,5 +211,4 @@ public class SignalController {
             startMs, endMs, csvFile);
         return csvFile;
     }
-
 }

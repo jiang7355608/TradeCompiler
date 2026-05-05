@@ -1,9 +1,8 @@
 package com.trading.signal.backtest;
 
 import com.trading.signal.config.TradingProperties;
-import com.trading.signal.service.EmailService;
+import com.trading.signal.service.BoxRangeDetector;
 import com.trading.signal.strategy.AggressiveStrategy;
-import com.trading.signal.strategy.ConservativeStrategy;
 import com.trading.signal.strategy.MeanReversionStrategy;
 import jakarta.mail.*;
 import jakarta.mail.internet.InternetAddress;
@@ -23,13 +22,13 @@ import java.util.Properties;
  * 月度回测定时任务
  *
  * 每月1号凌晨2点自动执行：
- *   1. 抓取过去3个月的 BTC 1分钟K线数据
- *   2. 对 AggressiveStrategy 和 ConservativeStrategy 分别回测
+ *   1. 抓取过去3个月的 BTC 15分钟K线数据
+ *   2. 根据当前 trading.strategy 配置运行对应的回测引擎：
+ *      - aggressive     → AggressiveBacktestEngine
+ *      - mean-reversion → MeanReversionBacktestEngine（使用 BoxRangeDetector 当前箱体）
  *   3. 生成报告并通过邮件发送
- *   4. 报告中包含参数调整建议
  *
  * Cron 表达式：0 0 2 1 * ?
- *   秒=0, 分=0, 时=2, 日=1, 月=*, 周=?
  *   即每月1号凌晨2:00执行
  */
 @Component
@@ -39,9 +38,11 @@ public class BacktestScheduler {
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     private final TradingProperties properties;
+    private final BoxRangeDetector boxRangeDetector;
 
-    public BacktestScheduler(TradingProperties properties) {
+    public BacktestScheduler(TradingProperties properties, BoxRangeDetector boxRangeDetector) {
         this.properties = properties;
+        this.boxRangeDetector = boxRangeDetector;
     }
 
     /**
@@ -59,17 +60,18 @@ public class BacktestScheduler {
      * 可被 REST 接口手动触发
      */
     public void runBacktest() {
-        TradingProperties.Backtest btCfg  = properties.getBacktest();
-        TradingProperties.Email    emailCfg = properties.getEmail();
+        TradingProperties.Backtest btCfg = properties.getBacktest();
+        TradingProperties.Email emailCfg = properties.getEmail();
+        String strategy = properties.getStrategy();
 
         // 确保数据目录存在
         File dataDir = new File(btCfg.getDataDir());
         if (!dataDir.exists()) dataDir.mkdirs();
 
         // 时间范围：过去3个月
-        LocalDate today    = LocalDate.now();
+        LocalDate today = LocalDate.now();
         LocalDate threeMonthsAgo = today.minusMonths(3);
-        long endMs   = today.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
+        long endMs = today.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
         long startMs = threeMonthsAgo.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli();
 
         String csvFile = btCfg.getDataDir() + "/btc_15m_"
@@ -77,7 +79,8 @@ public class BacktestScheduler {
 
         StringBuilder report = new StringBuilder();
         report.append("═══════════════════════════════════════════\n");
-        report.append("  BTC 交易策略月度回测报告\n");
+        report.append("  BTC 月度回测报告\n");
+        report.append("  策略: ").append(strategy).append("\n");
         report.append("  回测区间: ").append(threeMonthsAgo.format(DATE_FMT))
               .append(" → ").append(today.format(DATE_FMT)).append("\n");
         report.append("  本金: ").append(btCfg.getInitialCapital())
@@ -102,85 +105,91 @@ public class BacktestScheduler {
             log.error("数据抓取失败: {}", e.getMessage(), e);
             report.append("⚠ 数据抓取失败: ").append(e.getMessage()).append("\n");
             report.append("回测中止，请检查网络连接后重试\n");
-            sendEmail(emailCfg, buildSubject(today), report.toString());
+            sendEmail(emailCfg, buildSubject(today, strategy), report.toString());
             return;
         }
 
-        // Step 2: 回测两个策略
-        BacktestEngine engine = new BacktestEngine(properties);
-        TradingProperties.StrategyParams params = properties.getParams();
-
-        try {
-            BacktestResult aggResult = engine.run(csvFile, new AggressiveStrategy(params));
-            report.append(aggResult.buildEmailReport("激进策略 (Aggressive)", params, "aggressive"));
-        } catch (Exception e) {
-            log.error("激进策略回测失败: {}", e.getMessage(), e);
-            report.append("⚠ 激进策略回测失败: ").append(e.getMessage()).append("\n\n");
+        // Step 2: 根据策略执行回测
+        if ("mean-reversion".equals(strategy)) {
+            runMeanReversionBacktest(csvFile, btCfg, report);
+        } else {
+            runAggressiveBacktest(csvFile, btCfg, report);
         }
 
-        try {
-            BacktestResult conResult = engine.run(csvFile, new ConservativeStrategy(params));
-            report.append(conResult.buildEmailReport("保守策略 (Conservative)", params, "conservative"));
-        } catch (Exception e) {
-            log.error("保守策略回测失败: {}", e.getMessage(), e);
-            report.append("⚠ 保守策略回测失败: ").append(e.getMessage()).append("\n\n");
-        }
-
-        try {
-            BacktestResult mrResult = engine.run(csvFile, new MeanReversionStrategy(params));
-            report.append(mrResult.buildEmailReport("均值回归策略 (Mean Reversion)", params, "mean-reversion"));
-        } catch (Exception e) {
-            log.error("均值回归策略回测失败: {}", e.getMessage(), e);
-            report.append("⚠ 均值回归策略回测失败: ").append(e.getMessage()).append("\n\n");
-        }
-
-        // Step 3: 附上当前参数供参考
-        report.append(buildParamsSummary(params));
-
-        // Step 4: 发送邮件
-        String subject = buildSubject(today);
+        // Step 3: 发送邮件
+        String subject = buildSubject(today, strategy);
         sendEmail(emailCfg, subject, report.toString());
         log.info("月度回测报告已发送: {}", subject);
     }
 
     /**
-     * 生成当前参数摘要，方便对照回测结果决定是否调整
+     * 运行 AggressiveStrategy 回测
      */
-    private String buildParamsSummary(TradingProperties.StrategyParams p) {
-        return String.format(
-            "═══════════════════════════════════════════\n" +
-            "  当前策略参数（供参考，如需调整请修改 application.yml）\n" +
-            "───────────────────────────────────────────\n" +
-            "  [分析器]\n" +
-            "  横盘窗口: %d根  横盘阈值: %.3f%%\n" +
-            "  突破验证窗口: %d根  均量窗口: %d根\n" +
-            "  放量倍数: %.1fx  EMA: %d/%d  趋势阈值: %.4f\n" +
-            "───────────────────────────────────────────\n" +
-            "  [激进策略]\n" +
-            "  风险回报比: %.1f  最小止损兜底: %.2f%%\n" +
-            "  强信号仓位: %.0f%%  弱信号仓位: %.0f%%\n" +
-            "  冷却: %d分钟\n" +
-            "───────────────────────────────────────────\n" +
-            "  [保守策略]\n" +
-            "  风险回报比: %.1f  最小止损兜底: %.2f%%\n" +
-            "  标准仓位: %.0f%%  加强仓位: %.0f%%\n" +
-            "  冷却: %d分钟\n" +
-            "═══════════════════════════════════════════\n",
-            p.getRangeWindow(), p.getRangeThreshold() * 100,
-            p.getBreakoutWindowLong(), p.getVolWindow(),
-            p.getVolumeSpikeMultiplier(), p.getEmaShort(), p.getEmaLong(), p.getTrendThreshold(),
-            p.getAggRiskRewardRatio(), p.getAggMinSlPct() * 100,
-            p.getAggPositionStrong() * 100, p.getAggPositionWeak() * 100,
-            p.getAggCooldownMs() / 60000,
-            p.getConRiskRewardRatio(), p.getConMinSlPct() * 100,
-            p.getConPositionBase() * 100, p.getConPositionBonus() * 100,
-            p.getConCooldownMs() / 60000
-        );
+    private void runAggressiveBacktest(String csvFile, TradingProperties.Backtest btCfg,
+                                        StringBuilder report) {
+        try {
+            log.info("运行突破策略回测 (Aggressive)");
+            AggressiveBacktestEngine engine = new AggressiveBacktestEngine();
+            AggressiveStrategy strategy = new AggressiveStrategy(btCfg.getInitialCapital());
+
+            BacktestResult result = engine.run(csvFile, strategy,
+                btCfg.getInitialCapital(), btCfg.getLeverage());
+
+            report.append(result.buildEmailReport("突破策略 (Aggressive)"));
+
+        } catch (Exception e) {
+            log.error("突破策略回测失败: {}", e.getMessage(), e);
+            report.append("⚠ 突破策略回测失败: ").append(e.getMessage()).append("\n\n");
+        }
     }
 
-    private String buildSubject(LocalDate date) {
-        return properties.getBacktest().getReportSubject()
-            + " " + date.format(DateTimeFormatter.ofPattern("yyyy年MM月"));
+    /**
+     * 运行 MeanReversionStrategy 回测
+     * 使用 BoxRangeDetector 中当前识别到的箱体上下沿作为回测箱体
+     */
+    private void runMeanReversionBacktest(String csvFile, TradingProperties.Backtest btCfg,
+                                           StringBuilder report) {
+        try {
+            log.info("运行均值回归策略回测 (MeanReversion)");
+
+            // 获取箱体范围（优先使用 BoxRangeDetector 当前值）
+            double rangeHigh;
+            double rangeLow;
+
+            if (boxRangeDetector.isValid()) {
+                rangeHigh = boxRangeDetector.getCurrentRangeHigh();
+                rangeLow  = boxRangeDetector.getCurrentRangeLow();
+                log.info("使用 BoxRangeDetector 当前箱体: [{} - {}]",
+                    String.format("%.0f", rangeLow), String.format("%.0f", rangeHigh));
+            } else {
+                log.warn("BoxRangeDetector 箱体无效，跳过 MeanReversion 回测");
+                report.append("⚠ 均值回归策略回测跳过：当前箱体无效（BoxRangeDetector 未识别到有效箱体）\n");
+                report.append("  建议：等待箱体识别完成后重新触发回测\n\n");
+                return;
+            }
+
+            report.append(String.format("箱体配置: %.0f - %.0f (宽度 %.0f)\n\n",
+                rangeLow, rangeHigh, rangeHigh - rangeLow));
+
+            MeanReversionBacktestEngine.MockBoxRangeDetector mockBox =
+                new MeanReversionBacktestEngine.MockBoxRangeDetector(rangeHigh, rangeLow);
+            MeanReversionStrategy strategy = new MeanReversionStrategy(mockBox);
+            MeanReversionBacktestEngine engine = new MeanReversionBacktestEngine();
+
+            BacktestResult result = engine.run(csvFile, strategy,
+                btCfg.getInitialCapital(), btCfg.getLeverage());
+
+            report.append(result.buildEmailReport("均值回归策略 (MeanReversion)"));
+
+        } catch (Exception e) {
+            log.error("均值回归策略回测失败: {}", e.getMessage(), e);
+            report.append("⚠ 均值回归策略回测失败: ").append(e.getMessage()).append("\n\n");
+        }
+    }
+
+    private String buildSubject(LocalDate date, String strategy) {
+        String strategyLabel = "mean-reversion".equals(strategy) ? "均值回归" : "突破策略";
+        return "[月度回测报告] BTC " + strategyLabel + " " + date.format(DateTimeFormatter.ofPattern("yyyy年MM月"));
     }
 
     /**
@@ -193,11 +202,11 @@ public class BacktestScheduler {
         }
         try {
             Properties props = new Properties();
-            props.put("mail.smtp.auth",            "true");
+            props.put("mail.smtp.auth", "true");
             props.put("mail.smtp.starttls.enable", "true");
-            props.put("mail.smtp.host",            "smtp.gmail.com");
-            props.put("mail.smtp.port",            "587");
-            props.put("mail.smtp.ssl.trust",       "smtp.gmail.com");
+            props.put("mail.smtp.host", "smtp.gmail.com");
+            props.put("mail.smtp.port", "587");
+            props.put("mail.smtp.ssl.trust", "smtp.gmail.com");
 
             Session session = Session.getInstance(props, new Authenticator() {
                 @Override

@@ -1,6 +1,6 @@
 # BTC Trading Signal Engine
 
-Automated trading system for BTC-USDT perpetual futures on OKX. Three strategies, live execution, trailing stops, remote control via iPhone.
+Automated trading system for BTC-USDT perpetual futures on OKX. Two strategies (Aggressive + Mean Reversion), live execution, trailing stops, remote control via iPhone.
 
 ## Features
 
@@ -9,17 +9,16 @@ Automated trading system for BTC-USDT perpetual futures on OKX. Three strategies
 - Atomic stop-loss: order + SL/TP in single request
 - Confidence-based position sizing
 - Trailing stop for trend-following (Aggressive strategy)
-- Multi-layer circuit breakers (3-loss cooldown, 40% drawdown kill switch)
+- Multi-layer circuit breakers (2-loss cooldown, 40% drawdown kill switch)
 - Email notifications + remote control via REST API
 - Monthly backtesting with automated reports
 
 ## Strategies
 
-| Strategy | Type | Market | Command |
-|----------|------|--------|---------|
-| Aggressive | Breakout + Trailing Stop | Trending | `POST /api/strategy/aggressive` |
-| Conservative | Breakout | Post-consolidation | `POST /api/strategy/conservative` |
-| Mean Reversion | Range-bound | Sideways | `POST /api/strategy/mean-reversion` |
+| Strategy | Type | Market | Status |
+|----------|------|--------|--------|
+| Aggressive | Breakout + Trailing Stop | Trending | ✅ Production Ready |
+| Mean Reversion | Range-bound Trading | Sideways | ✅ Production Ready |
 
 ## Aggressive Strategy (Breakout + Trailing Stop)
 
@@ -58,43 +57,52 @@ Key: Stop only moves in favorable direction
 
 ## Mean Reversion Strategy
 
-Two-phase execution: probe position → add position.
+Box range trading: buy low near support, sell high near resistance.
 
-**Range Detection (BoxRangeDetector v3.0)**
-- Data: Last 7 days of 4H candles
+**Range Detection (BoxRangeDetector)**
+- Data: Last 7 days of 4H candles (42 bars)
 - Algorithm: Density clustering with dynamic tolerance (ATR-based)
 - Validation: ≥3 touches per boundary, width 1000-12000 USD
 - Update: Daily at 00:00 (skipped if position open)
 
-**Probe Phase (IDLE → PROBE)**
+**Entry Logic**
 ```
-Entry:
-- Price near boundary (within 10% of range width)
-- Bullish/bearish candle confirmation
-- Confidence: 0.50-0.80 (distance + body size + acceleration)
-- Position: 10% × confidence
-- No exchange SL (strategy monitors every 1min)
-- Timeout: 3 hours
+Long Entry (near support):
+- Price < rangeLow + 15% of box width
+- Price > rangeLow (not broken)
+→ Enter long, target midline
+
+Short Entry (near resistance):
+- Price > rangeHigh - 15% of box width
+- Price < rangeHigh (not broken)
+→ Enter short, target midline
 ```
 
-**Add Phase (PROBE → CONFIRMED)**
+**Stop Loss & Take Profit**
 ```
-Trigger:
-- Profit > 15% of range width
-- Hold time ≥ 45min
+Long:
+- SL = rangeLow - 1×ATR
+- TP = (rangeHigh + rangeLow) / 2
 
-Execution:
-- Confidence: 0.70-0.95 (profit excess + hold time)
-- Position: 30% × confidence
-- Atomic SL/TP for entire position (attachAlgoOrds)
+Short:
+- SL = rangeHigh + 1×ATR
+- TP = (rangeHigh + rangeLow) / 2
 ```
 
-**Risk Controls**
-- Global cooldown: 45min
-- 3-loss circuit breaker: 4hr pause
-- Account kill switch: 40% drawdown → permanent stop
-- Position validation: Query exchange before every order
-- Timeout failsafe: 3hr probe, 6hr confirmed
+**Position Sizing**
+- Risk per trade: 2% of account
+- Max position: 30%
+- Min position: 5% (too small positions are rejected)
+- Cooldown: 15min global, 1hr per direction after 2 consecutive losses
+
+**Backtesting**
+```java
+// Use MockBoxRangeDetector for backtesting with manual box range
+MockBoxRangeDetector mockBox = new MockBoxRangeDetector(85000, 80000);
+MeanReversionStrategy strategy = new MeanReversionStrategy(mockBox);
+MeanReversionBacktestEngine engine = new MeanReversionBacktestEngine();
+BacktestResult result = engine.run(csvPath, strategy, 200.0, 20);
+```
 
 ## Remote Control
 
@@ -107,7 +115,7 @@ POST /api/control/stop           # Stop strategy
 GET  /api/control/status         # Query status
 POST /api/control/emergency-close # Emergency close
 
-Header: X-Auth-Token: jiangyuxuanGGbond339@!
+Header: X-Auth-Token: <your-token>
 Port: 10086
 ```
 
@@ -117,7 +125,7 @@ Port: 10086
 3. Configure:
    - URL: `http://your-server:10086/api/control/start`
    - Method: POST
-   - Headers: `X-Auth-Token: jiangyuxuanGGbond339@!`
+   - Headers: `X-Auth-Token: <your-token>`
 4. Add to home screen
 
 ## Tech Stack
@@ -127,7 +135,6 @@ Port: 10086
 - Gmail SMTP for notifications
 - Scheduled tasks:
   - Strategy analysis: Every 15min (aligned to candle close)
-  - Stop-loss monitor: Every 1min (probe positions)
   - Trailing stop monitor: Every 1min (Aggressive strategy)
   - Range detection: Daily at 00:00 (skipped if position open)
   - Monthly backtest: 1st of month at 02:00
@@ -140,24 +147,27 @@ Edit `trading-signal/src/main/resources/application.yml`:
 server:
   port: 10086
 
-trade-api:
-  enabled: true
-  simulated: true  # false for live trading
-  api-key: "..."
-  secret-key: "..."
-  passphrase: "..."
-  leverage: 20
+trading:
+  strategy: aggressive  # or mean-reversion
 
-email:
-  enabled: true
-  sender-email: "..."
-  app-password: "..."  # Gmail app password
-  receiver-email: "..."
+  trade-api:
+    enabled: false      # true to enable auto-trading
+    simulated: true     # false for live trading
+    api-key: "..."
+    secret-key: "..."
+    passphrase: "..."
+    leverage: 20
 
-params:
-  box-max-width: 12000
-  box-min-width: 1000
-  mr-entry-buffer-pct: 0.10
+  email:
+    enabled: false
+    sender-email: "..."
+    app-password: "..."  # Gmail app password
+    receiver-email: "..."
+
+  backtest:
+    initial-capital: 200.0
+    leverage: 20
+    data-dir: backtest-data
 ```
 
 ## Run
@@ -167,9 +177,18 @@ cd trading-signal
 mvn spring-boot:run
 ```
 
-Backtest:
+Backtest (Aggressive):
 ```bash
 mvn compile exec:java -Dexec.mainClass="com.trading.signal.backtest.BacktestRunner"
+```
+
+Backtest (Mean Reversion):
+```java
+// Modify BacktestRunner.java to use MeanReversionBacktestEngine
+MockBoxRangeDetector mockBox = new MockBoxRangeDetector(85000, 80000);
+MeanReversionStrategy strategy = new MeanReversionStrategy(mockBox);
+MeanReversionBacktestEngine engine = new MeanReversionBacktestEngine();
+BacktestResult result = engine.run(CSV_FILE, strategy, INITIAL_CAPITAL, LEVERAGE);
 ```
 
 ## API
@@ -178,9 +197,8 @@ mvn compile exec:java -Dexec.mainClass="com.trading.signal.backtest.BacktestRunn
 |--------|------|-------------|
 | GET | `/api/signal/run` | Trigger analysis |
 | GET | `/api/strategy` | Current strategy |
-| POST | `/api/strategy/{name}` | Switch strategy |
 | POST | `/api/backtest/run` | Run backtest |
-| GET | `/api/optimize?top=5` | Parameter optimization |
+| GET | `/api/backtest/range?start=2026-03-01&end=2026-03-31` | Range backtest |
 
 ## Risk Warnings
 
@@ -190,9 +208,10 @@ mvn compile exec:java -Dexec.mainClass="com.trading.signal.backtest.BacktestRunn
 - Test on paper trading first
 
 **Mean Reversion**
-- Probe phase has no exchange SL (strategy monitors every 1min)
-- If process crashes, probe position is unprotected
-- Add phase has exchange SL/TP (safe)
+- Fixed SL/TP, no trailing stop
+- Requires valid box range (1000-12000 USD width)
+- Box detection runs daily, may lag market changes
+- Test on paper trading first
 
 **General**
 - Test on paper trading before going live
@@ -205,14 +224,49 @@ mvn compile exec:java -Dexec.mainClass="com.trading.signal.backtest.BacktestRunn
 trading-signal/
 ├── src/main/java/com/trading/signal/
 │   ├── strategy/          # Trading strategies
-│   ├── backtest/          # Backtesting engine
+│   │   ├── Strategy.java                # Interface
+│   │   ├── AggressiveStrategy.java      # Breakout + Trailing Stop
+│   │   ├── MeanReversionStrategy.java   # Box range trading
+│   │   └── StrategyRouter.java          # Config-driven strategy selector
+│   ├── backtest/          # Backtesting engines
+│   │   ├── AggressiveBacktestEngine.java
+│   │   ├── MeanReversionBacktestEngine.java
+│   │   ├── BacktestResult.java
+│   │   ├── BacktestRunner.java
+│   │   ├── BacktestScheduler.java
+│   │   └── DataFetcher.java
 │   ├── service/           # Core services
+│   │   ├── SignalService.java           # Main scheduler (every 15min)
+│   │   ├── TradeExecutor.java           # Order execution + kill switch
+│   │   ├── BoxRangeDetector.java        # Density clustering box detection
+│   │   ├── TrailingStopMonitor.java     # 1min trailing stop monitor
+│   │   ├── EmailService.java            # Gmail SMTP notifications
+│   │   └── SignalWriter.java            # Write signal.json
 │   ├── client/            # OKX API clients
+│   │   ├── OkxClient.java               # Market data (candles)
+│   │   └── OkxTradeClient.java          # Orders, positions, balance
 │   ├── controller/        # REST endpoints
-│   └── model/             # Data models
+│   │   ├── ControlController.java       # Start/stop/status/emergency
+│   │   └── SignalController.java        # Manual trigger, backtest
+│   ├── model/             # Data models
+│   │   ├── KLine.java
+│   │   ├── MarketData.java
+│   │   └── TradeSignal.java
+│   ├── analyzer/
+│   │   └── MarketAnalyzer.java          # ATR + indicator calculation
+│   └── config/
+│       └── TradingProperties.java       # application.yml binding
 └── src/main/resources/
     └── application.yml    # Configuration
 ```
+
+## Risk Management (5 Layers)
+
+1. **Global cooldown** — 15min between trades
+2. **Direction pause** — 2 consecutive losses in same direction → pause 1hr
+3. **Position validation** — Query exchange before every order (exchange as single source of truth)
+4. **Equity Kill Switch** — Balance drops to 60% of initial → permanent halt (restart to recover)
+5. **Trailing Stop** — Aggressive strategy only, 1min monitor, moves only in favorable direction
 
 ## License
 

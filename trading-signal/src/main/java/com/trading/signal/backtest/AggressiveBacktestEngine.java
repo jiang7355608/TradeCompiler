@@ -1,7 +1,6 @@
 package com.trading.signal.backtest;
 
 import com.trading.signal.analyzer.MarketAnalyzer;
-import com.trading.signal.config.TradingProperties;
 import com.trading.signal.model.KLine;
 import com.trading.signal.model.MarketData;
 import com.trading.signal.model.TradeSignal;
@@ -16,15 +15,13 @@ import java.util.List;
  * 特点：
  * 1. 突破即入场，无状态机
  * 2. 不使用固定止盈，纯 Trailing Stop
- * 3. Trailing Stop = 当前价格 ± 1×ATR（只能向有利方向移动）
+ * 3. Trailing Stop = 当前价格 ± ATR×2.5（只能向有利方向移动）
  */
 public class AggressiveBacktestEngine {
     
     private static final int WARMUP_BARS = 60;
     
     private final MarketAnalyzer analyzer;
-    private final double initialCapital;
-    private final int leverage;
     private boolean silent = false;
     
     // 持仓状态
@@ -40,10 +37,8 @@ public class AggressiveBacktestEngine {
     private double trailingStop;
     private double maxProfit;  // 最大浮盈（用于统计）
     
-    public AggressiveBacktestEngine(TradingProperties props) {
-        this.analyzer = new MarketAnalyzer(props.getParams());
-        this.initialCapital = props.getBacktest().getInitialCapital();
-        this.leverage = props.getBacktest().getLeverage();
+    public AggressiveBacktestEngine() {
+        this.analyzer = new MarketAnalyzer();
     }
     
     public AggressiveBacktestEngine setSilent(boolean silent) {
@@ -74,11 +69,11 @@ public class AggressiveBacktestEngine {
         return klines;
     }
     
-    public BacktestResult run(String csvPath, AggressiveStrategy strategy) throws Exception {
-        return run(loadCsv(csvPath), strategy);
+    public BacktestResult run(String csvPath, AggressiveStrategy strategy, double initialCapital, int leverage) throws Exception {
+        return run(loadCsv(csvPath), strategy, initialCapital, leverage);
     }
     
-    public BacktestResult run(List<KLine> allKlines, AggressiveStrategy strategy) {
+    public BacktestResult run(List<KLine> allKlines, AggressiveStrategy strategy, double initialCapital, int leverage) {
         if (!silent) {
             System.out.printf("%n开始回测: AGGRESSIVE v8 (Trailing Stop Only) | 共 %d 根K线%n", allKlines.size());
         }
@@ -174,7 +169,7 @@ public class AggressiveBacktestEngine {
             trailingStop = Math.max(trailingStop, newTrailingStop);
             
             // 更新最大浮盈
-            double currentProfit = (currentPrice - entryPrice) / entryPrice * positionSize * leverage * initialCapital;
+            double currentProfit = (currentPrice - entryPrice) / entryPrice * positionSize * result.getLeverage() * result.getInitialCapital();
             maxProfit = Math.max(maxProfit, currentProfit);
             
             // 检查是否触及 trailing stop
@@ -188,7 +183,7 @@ public class AggressiveBacktestEngine {
             trailingStop = Math.min(trailingStop, newTrailingStop);
             
             // 更新最大浮盈
-            double currentProfit = (entryPrice - currentPrice) / entryPrice * positionSize * leverage * initialCapital;
+            double currentProfit = (entryPrice - currentPrice) / entryPrice * positionSize * result.getLeverage() * result.getInitialCapital();
             maxProfit = Math.max(maxProfit, currentProfit);
             
             // 检查是否触及 trailing stop
@@ -206,9 +201,9 @@ public class AggressiveBacktestEngine {
         
         double pnl;
         if ("long".equals(direction)) {
-            pnl = (exitPrice - entryPrice) / entryPrice * positionSize * leverage * result.getInitialCapital();
+            pnl = (exitPrice - entryPrice) / entryPrice * positionSize * result.getLeverage() * result.getInitialCapital();
         } else {
-            pnl = (entryPrice - exitPrice) / entryPrice * positionSize * leverage * result.getInitialCapital();
+            pnl = (entryPrice - exitPrice) / entryPrice * positionSize * result.getLeverage() * result.getInitialCapital();
         }
         
         double pnlPct = pnl / result.getInitialCapital();

@@ -1,71 +1,92 @@
 package com.trading.signal.backtest;
 
-import com.trading.signal.config.TradingProperties;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 回测结果统计
+ * 回测结果统计器 - 记录交易并计算性能指标
  *
- * 记录每笔交易并计算汇总指标：
- *   胜率、平均盈亏比、最大连续亏损、最大回撤、总收益率
+ * 功能：
+ * - 记录每笔交易的详细信息
+ * - 计算胜率、盈亏比、最大回撤等关键指标
+ * - 生成格式化的回测报告
+ * - 提供期望值分析和策略评估
+ * 
+ * 核心指标：
+ * - 胜率：盈利交易占总交易的百分比
+ * - 盈亏比：平均盈利 / 平均亏损
+ * - 利润因子：总盈利 / 总亏损
+ * - 最大回撤：相对于峰值资金的最大跌幅
+ * - 期望值：每笔交易的平均盈亏
  */
 public class BacktestResult {
 
-    /** 单笔交易记录 */
+    /**
+     * 单笔交易记录
+     */
     public static class Trade {
-        public final long   entryTime;
-        public final String direction;   // "long" / "short"
-        public final double entryPrice;
-        public final double stopLoss;
-        public final double takeProfit;
-        public final double positionSize; // 占本金比例
-        public final String exitReason;  // "tp" / "sl"
-        public final double pnlPct;      // 盈亏百分比（相对本金）
-        public final double pnlU;        // 盈亏金额（U）
+        public final long entryTime;        // 入场时间戳
+        public final String direction;      // "long" / "short"
+        public final double entryPrice;     // 入场价格
+        public final double stopLoss;       // 止损价格
+        public final double takeProfit;     // 止盈价格
+        public final double positionSize;   // 仓位大小（占本金比例）
+        public final String exitReason;    // 平仓原因："tp" / "sl" / "trailing"
+        public final double pnlPct;         // 盈亏百分比（相对本金）
+        public final double pnlU;           // 盈亏金额（USDT）
 
         public Trade(long entryTime, String direction, double entryPrice,
                      double stopLoss, double takeProfit, double positionSize,
                      String exitReason, double pnlPct, double pnlU) {
-            this.entryTime    = entryTime;
-            this.direction    = direction;
-            this.entryPrice   = entryPrice;
-            this.stopLoss     = stopLoss;
-            this.takeProfit   = takeProfit;
+            this.entryTime = entryTime;
+            this.direction = direction;
+            this.entryPrice = entryPrice;
+            this.stopLoss = stopLoss;
+            this.takeProfit = takeProfit;
             this.positionSize = positionSize;
-            this.exitReason   = exitReason;
-            this.pnlPct       = pnlPct;
-            this.pnlU         = pnlU;
+            this.exitReason = exitReason;
+            this.pnlPct = pnlPct;
+            this.pnlU = pnlU;
         }
     }
 
-    private final double   initialCapital;
-    private final int      leverage;
+    private final double initialCapital;    // 初始资金
+    private final int leverage;             // 杠杆倍数
     private final List<Trade> trades = new ArrayList<>();
     private final Map<String, Integer> rejectReasons = new java.util.LinkedHashMap<>();
 
     // 实时跟踪
-    private double currentCapital;
-    private double peakCapital;
+    private double currentCapital;          // 当前资金
+    private double peakCapital;             // 峰值资金
 
-    // 统计
-    private int    wins;
-    private int    losses;
-    private double totalWinPnl;
-    private double totalLossPnl;
-    private int    consecutiveLosses;
-    private int    maxConsecutiveLosses;
-    private double maxDrawdown; // 最大回撤（相对峰值）
+    // 统计指标
+    private int wins;                       // 盈利次数
+    private int losses;                     // 亏损次数
+    private double totalWinPnl;             // 总盈利金额
+    private double totalLossPnl;            // 总亏损金额
+    private int consecutiveLosses;          // 当前连续亏损次数
+    private int maxConsecutiveLosses;       // 最大连续亏损次数
+    private double maxDrawdown;             // 最大回撤（相对峰值）
 
+    /**
+     * 构造回测结果统计器
+     * 
+     * @param initialCapital 初始资金（USDT）
+     * @param leverage 杠杆倍数
+     */
     public BacktestResult(double initialCapital, int leverage) {
         this.initialCapital = initialCapital;
         this.currentCapital = initialCapital;
-        this.peakCapital    = initialCapital;
-        this.leverage       = leverage;
+        this.peakCapital = initialCapital;
+        this.leverage = leverage;
     }
 
+    /**
+     * 添加一笔交易记录
+     * 
+     * @param trade 交易记录
+     */
     public void addTrade(Trade trade) {
         trades.add(trade);
         currentCapital += trade.pnlU;
@@ -94,6 +115,27 @@ public class BacktestResult {
         }
     }
 
+    /**
+     * 记录被拒绝的信号（用于分析策略过滤效果）
+     * 
+     * @param reason 拒绝原因
+     */
+    public void recordReject(String reason) {
+        // 提取拒绝原因的关键词作为分类
+        String key = reason;
+        int idx = reason.indexOf('(');
+        if (idx > 0) key = reason.substring(0, idx).trim();
+        idx = key.indexOf(':');
+        if (idx > 0) key = key.substring(0, idx).trim();
+        if (key.length() > 60) key = key.substring(0, 60);
+        rejectReasons.merge(key, 1, Integer::sum);
+    }
+
+    /**
+     * 打印回测结果摘要
+     * 
+     * @param strategyName 策略名称
+     */
     public void printSummary(String strategyName) {
         int total = wins + losses;
         if (total == 0) {
@@ -101,12 +143,12 @@ public class BacktestResult {
             return;
         }
 
-        double winRate      = (double) wins / total * 100;
-        double avgWin       = wins > 0 ? totalWinPnl / wins : 0;
-        double avgLoss      = losses > 0 ? totalLossPnl / losses : 0;
+        double winRate = (double) wins / total * 100;
+        double avgWin = wins > 0 ? totalWinPnl / wins : 0;
+        double avgLoss = losses > 0 ? totalLossPnl / losses : 0;
         double profitFactor = totalLossPnl > 0 ? totalWinPnl / totalLossPnl : Double.MAX_VALUE;
-        double totalPnl     = currentCapital - initialCapital;
-        double totalPnlPct  = totalPnl / initialCapital * 100;
+        double totalPnl = currentCapital - initialCapital;
+        double totalPnlPct = totalPnl / initialCapital * 100;
 
         System.out.println("\n" + "=".repeat(55));
         System.out.printf("  回测结果 — %s%n", strategyName.toUpperCase());
@@ -140,112 +182,37 @@ public class BacktestResult {
         System.out.println("=".repeat(55));
     }
 
-    public List<Trade> getTrades()       { return trades; }
-    public double getCurrentCapital()    { return currentCapital; }
-    public double getMaxDrawdown()       { return maxDrawdown; }
-    public int    getMaxConsecLosses()   { return maxConsecutiveLosses; }
-    public int    getWins()              { return wins; }
-    public int    getLosses()            { return losses; }
-    public double getInitialCapital()    { return initialCapital; }
-    public Map<String, Integer> getRejectReasons() { return rejectReasons; }
-
-    public void recordReject(String reason) {
-        // 取reason的前缀作为分类key（截取到第一个空格或括号）
-        String key = reason;
-        int idx = reason.indexOf('(');
-        if (idx > 0) key = reason.substring(0, idx).trim();
-        idx = key.indexOf(':');
-        if (idx > 0) key = key.substring(0, idx).trim();
-        if (key.length() > 60) key = key.substring(0, 60);
-        rejectReasons.merge(key, 1, Integer::sum);
-    }
-
     /**
-     * 生成邮件报告文本（含参数调整建议）
-     *
+     * 生成简化的邮件报告
+     * 
      * @param strategyName 策略名称
-     * @param params       当前参数配置（用于生成调整建议）
-     * @param strategyType "aggressive" / "conservative" / "mean-reversion"
-     */
-    public String buildEmailReport(String strategyName,
-                                   TradingProperties.StrategyParams params,
-                                   String strategyType) {
-        int total = wins + losses;
-        if (total == 0) return "【" + strategyName + "】\n  本期无交易信号产生\n\n";
-
-        double winRate      = (double) wins / total * 100;
-        double avgWin       = wins > 0 ? totalWinPnl / wins : 0;
-        double avgLoss      = losses > 0 ? totalLossPnl / losses : 0;
-        double rrRatio      = avgLoss > 0 ? avgWin / avgLoss : 0;
-        double profitFactor = totalLossPnl > 0 ? totalWinPnl / totalLossPnl : 999;
-        double totalPnl     = currentCapital - initialCapital;
-        double totalPnlPct  = totalPnl / initialCapital * 100;
-        double expectancy   = (winRate / 100 * avgWin) - ((1 - winRate / 100) * avgLoss);
-        long   slCount      = trades.stream().filter(t -> "sl".equals(t.exitReason)).count();
-        long   tpCount      = trades.stream().filter(t -> "tp".equals(t.exitReason)).count();
-
-        // ── 基础统计 ──────────────────────────────────────────────────────
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("【%s】\n", strategyName));
-
-        // 止损止盈描述按策略类型区分
-        switch (strategyType) {
-            case "aggressive" -> {
-                sb.append(String.format("  止损方式    : 动态（前一根K线中点，兜底%.2f%%）\n", params.getAggMinSlPct() * 100));
-                sb.append(String.format("  止盈方式    : 动态（止损距离 × %.1f倍风险回报比）\n", params.getAggRiskRewardRatio()));
-            }
-            case "conservative" -> {
-                sb.append(String.format("  止损方式    : 动态（前一根K线中点，兜底%.2f%%）\n", params.getConMinSlPct() * 100));
-                sb.append(String.format("  止盈方式    : 动态（止损距离 × %.1f倍风险回报比）\n", params.getConRiskRewardRatio()));
-            }
-            case "mean-reversion" -> {
-                sb.append(String.format("  止损方式    : 区间边沿外 %.0f%%区间宽度\n", params.getMrSlBuffer() * 100));
-                sb.append(String.format("  止盈方式    : 止损距离 × %.1f倍风险回报比\n", params.getMrRiskRewardRatio()));
-            }
-        }
-
-        sb.append(String.format("  总盈亏      : %+.2fU (%+.2f%%)\n", totalPnl, totalPnlPct));
-        sb.append(String.format("  交易次数    : %d次（盈%d / 亏%d）\n", total, wins, losses));
-        sb.append(String.format("  胜率        : %.1f%%\n", winRate));
-        sb.append(String.format("  平均盈利    : +%.2fU  平均亏损: -%.2fU\n", avgWin, avgLoss));
-        sb.append(String.format("  盈亏比      : %.2f  利润因子: %.2f\n", rrRatio, profitFactor));
-        sb.append(String.format("  止盈触发    : %d次  止损触发: %d次（止损率%.1f%%）\n",
-            tpCount, slCount, (double) slCount / total * 100));
-        sb.append(String.format("  最大连续亏损: %d次  最大回撤: %.1f%%\n",
-            maxConsecutiveLosses, maxDrawdown * 100));
-        sb.append(String.format("  每笔期望值  : %+.2fU\n", expectancy));
-
-        // 总体结论
-        if (expectancy > 0) {
-            sb.append("  总体结论    : ✓ 正期望值策略\n");
-        } else {
-            sb.append("  总体结论    : ✗ 负期望值策略，必须调整参数\n");
-        }
-        sb.append("\n");
-
-        // ── 参数调整建议 ──────────────────────────────────────────────────
-        sb.append("  ─── 参数调整建议 ───────────────────────────\n");
-        List<ParameterAdvisor.Advice> advices = "aggressive".equals(strategyType)
-            ? ParameterAdvisor.adviseAggressive(this, params)
-            : ParameterAdvisor.adviseConservative(this, params);
-        sb.append(ParameterAdvisor.formatAdvices(advices, strategyName));
-        sb.append("\n");
-
-        return sb.toString();
-    }
-
-    /**
-     * 兼容旧调用（无参数建议版本）
+     * @return 报告文本
      */
     public String buildEmailReport(String strategyName) {
         int total = wins + losses;
-        if (total == 0) return strategyName + ": 本期无交易信号产生\n";
-        double winRate  = (double) wins / total * 100;
-        double avgWin   = wins > 0 ? totalWinPnl / wins : 0;
-        double avgLoss  = losses > 0 ? totalLossPnl / losses : 0;
+        if (total == 0) {
+            return strategyName + ": 本期无交易信号产生\n";
+        }
+        
+        double winRate = (double) wins / total * 100;
+        double avgWin = wins > 0 ? totalWinPnl / wins : 0;
+        double avgLoss = losses > 0 ? totalLossPnl / losses : 0;
         double totalPnl = currentCapital - initialCapital;
         double expectancy = (winRate / 100 * avgWin) - ((1 - winRate / 100) * avgLoss);
+        
         return String.format("【%s】总盈亏: %+.2fU 胜率: %.1f%% 期望值: %+.2fU\n",
             strategyName, totalPnl, winRate, expectancy);
     }
+
+    // ── Getter 方法 ──────────────────────────────────────────────────────
+
+    public List<Trade> getTrades() { return trades; }
+    public double getCurrentCapital() { return currentCapital; }
+    public double getMaxDrawdown() { return maxDrawdown; }
+    public int getMaxConsecLosses() { return maxConsecutiveLosses; }
+    public int getWins() { return wins; }
+    public int getLosses() { return losses; }
+    public double getInitialCapital() { return initialCapital; }
+    public int getLeverage() { return leverage; }
+    public Map<String, Integer> getRejectReasons() { return rejectReasons; }
 }

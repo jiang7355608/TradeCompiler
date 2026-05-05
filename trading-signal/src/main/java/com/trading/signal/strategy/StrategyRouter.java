@@ -5,74 +5,109 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.Map;
-import java.util.function.Function;
-import java.util.stream.Collectors;
-
 /**
- * 策略路由器（替代原来的静态 StrategyFactory）
- *
- * Spring 启动时自动收集所有 Strategy Bean，构建 name→strategy 映射。
- * 新增策略只需实现 Strategy 接口并加 @Component，无需修改此类。
- *
- * 当前激活策略由 application.yml 中 trading.strategy 决定，
- * 运行时可通过 /api/strategy 接口热切换，无需重启。
+ * 策略路由器
+ * 
+ * 根据配置文件中的策略名称，选择并返回对应的策略实现。
+ * 当前支持的策略：
+ * - aggressive:     突破策略，追求趋势启动（趋势行情）
+ * - mean-reversion: 均值回归策略，箱体震荡交易（震荡行情）
+ * 
+ * 设计原则：
+ * - 策略通过 Spring 依赖注入管理
+ * - 配置驱动的策略选择
+ * - 清晰的错误处理和日志记录
+ * 
+ * 配置示例：
+ * ```yaml
+ * trading:
+ *   strategy: aggressive      # 或 mean-reversion
+ * ```
+ * 
+ * @author Trading System
+ * @version 2.1 (Added MeanReversionStrategy)
  */
 @Component
 public class StrategyRouter {
 
     private static final Logger log = LoggerFactory.getLogger(StrategyRouter.class);
 
-    private final Map<String, Strategy> strategyMap;
-    private final TradingProperties     properties;
+    private final TradingProperties properties;
+    private final AggressiveStrategy aggressiveStrategy;
+    private final MeanReversionStrategy meanReversionStrategy;
 
-    public StrategyRouter(List<Strategy> strategies, TradingProperties properties) {
-        this.properties  = properties;
-        this.strategyMap = strategies.stream()
-                .collect(Collectors.toMap(Strategy::getName, Function.identity()));
-        log.info("已注册策略: {}", strategyMap.keySet());
+    /**
+     * 构造策略路由器
+     * 
+     * @param properties 交易配置
+     * @param aggressiveStrategy 突破策略实现
+     * @param meanReversionStrategy 均值回归策略实现
+     */
+    public StrategyRouter(TradingProperties properties,
+                         AggressiveStrategy aggressiveStrategy,
+                         MeanReversionStrategy meanReversionStrategy) {
+        this.properties = properties;
+        this.aggressiveStrategy = aggressiveStrategy;
+        this.meanReversionStrategy = meanReversionStrategy;
+        
+        log.info("策略路由器初始化完成，当前策略: {}", properties.getStrategy());
     }
 
     /**
-     * 返回当前配置激活的策略实例
+     * 获取当前激活的策略
+     * 
+     * 根据配置文件中的 trading.strategy 设置返回对应的策略实现。
+     * 
+     * @return 当前策略实现
+     * @throws IllegalArgumentException 如果配置的策略名称不支持
      */
     public Strategy current() {
-        String name = properties.getStrategy();
-        Strategy strategy = strategyMap.get(name.toLowerCase());
-        if (strategy == null) {
-            throw new IllegalStateException(
-                String.format("未知策略: '%s'，可用策略: %s", name, strategyMap.keySet()));
-        }
-        return strategy;
+        String strategyName = properties.getStrategy();
+        
+        return switch (strategyName) {
+            case "aggressive" -> {
+                log.debug("使用突破策略 (AggressiveStrategy)");
+                yield aggressiveStrategy;
+            }
+            case "mean-reversion" -> {
+                log.debug("使用均值回归策略 (MeanReversionStrategy)");
+                yield meanReversionStrategy;
+            }
+            default -> {
+                String errorMsg = String.format(
+                    "不支持的策略: '%s'。当前支持的策略: aggressive, mean-reversion", 
+                    strategyName);
+                log.error(errorMsg);
+                throw new IllegalArgumentException(errorMsg);
+            }
+        };
     }
 
     /**
-     * 热切换策略（修改内存中的配置，无需重启）
-     *
-     * @param name 策略名称
+     * 获取策略名称
+     * 
+     * @return 当前配置的策略名称
      */
-    public void switchStrategy(String name) {
-        if (!strategyMap.containsKey(name.toLowerCase())) {
-            throw new IllegalArgumentException(
-                String.format("未知策略: '%s'，可用策略: %s", name, strategyMap.keySet()));
-        }
-        properties.setStrategy(name.toLowerCase());
-        log.info("策略已切换为: {}", name);
+    public String getCurrentStrategyName() {
+        return properties.getStrategy();
     }
 
-    /** 返回所有已注册的策略名称 */
-    public java.util.Set<String> availableStrategies() {
-        return java.util.Collections.unmodifiableSet(strategyMap.keySet());
+    /**
+     * 检查策略是否支持
+     * 
+     * @param strategyName 策略名称
+     * @return true 如果策略被支持
+     */
+    public boolean isStrategySupported(String strategyName) {
+        return "aggressive".equals(strategyName) || "mean-reversion".equals(strategyName);
     }
 
-    /** 按名称获取策略实例 */
-    public Strategy getStrategy(String name) {
-        Strategy strategy = strategyMap.get(name.toLowerCase());
-        if (strategy == null) {
-            throw new IllegalArgumentException(
-                String.format("未知策略: '%s'，可用策略: %s", name, strategyMap.keySet()));
-        }
-        return strategy;
+    /**
+     * 获取支持的策略列表
+     * 
+     * @return 支持的策略名称数组
+     */
+    public String[] getSupportedStrategies() {
+        return new String[]{"aggressive", "mean-reversion"};
     }
 }

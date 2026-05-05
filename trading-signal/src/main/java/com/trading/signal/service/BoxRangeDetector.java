@@ -109,7 +109,7 @@ public class BoxRangeDetector {
             try {
                 MeanReversionStrategy strategy = applicationContext.getBean(MeanReversionStrategy.class);
                 if (strategy.hasPosition()) {
-                    log.info("跳过箱体更新（存在持仓）");
+                    log.info("跳过箱体更新（存在持仓，避免策略不一致）");
                     return;
                 }
             } catch (Exception e) {
@@ -343,8 +343,9 @@ public class BoxRangeDetector {
             String.format("%.0f", boxWidth), String.format("%.1f", span * 100), String.format("%.0f", currentPrice));
         
         // 10. 箱体宽度检查
-        double maxWidth = properties.getParams().getBoxMaxWidth();
-        double minWidth = properties.getParams().getBoxMinWidth();
+        // TODO: 将这些参数移到配置文件或硬编码
+        double maxWidth = 12000.0;  // 最大箱体宽度（美元）
+        double minWidth = 1000.0;   // 最小箱体宽度（美元）
         
         if (boxWidth > maxWidth) {
             return BoxRange.invalid(String.format(

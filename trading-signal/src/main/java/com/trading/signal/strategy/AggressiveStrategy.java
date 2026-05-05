@@ -78,8 +78,6 @@ import java.util.List;
 @Component
 public class AggressiveStrategy implements Strategy {
 
-    private final TradingProperties.StrategyParams p;
-
     // 风控
     private long lastTradeTime;
     private long lastLongFailTime;
@@ -90,13 +88,13 @@ public class AggressiveStrategy implements Strategy {
     // 账户余额（实盘从交易所获取，回测使用固定值）
     private double accountBalance = 200.0;
 
-    @Autowired
-    public AggressiveStrategy(TradingProperties props) {
-        this.p = props.getParams();
+    public AggressiveStrategy() {
+        // 无参构造函数（Spring 注入）
     }
 
-    public AggressiveStrategy(TradingProperties.StrategyParams params) {
-        this.p = params;
+    public AggressiveStrategy(double accountBalance) {
+        // 回测专用构造函数
+        this.accountBalance = accountBalance;
     }
 
     @Override public String getName() { return "aggressive"; }

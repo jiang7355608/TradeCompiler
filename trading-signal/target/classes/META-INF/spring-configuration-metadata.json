@@ -1,0 +1,180 @@
+{
+  "groups": [
+    {
+      "name": "trading",
+      "type": "com.trading.signal.config.TradingProperties",
+      "sourceType": "com.trading.signal.config.TradingProperties"
+    },
+    {
+      "name": "trading.backtest",
+      "type": "com.trading.signal.config.TradingProperties$Backtest",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getBacktest()"
+    },
+    {
+      "name": "trading.email",
+      "type": "com.trading.signal.config.TradingProperties$Email",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getEmail()"
+    },
+    {
+      "name": "trading.okx",
+      "type": "com.trading.signal.config.TradingProperties$Okx",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getOkx()"
+    },
+    {
+      "name": "trading.proxy",
+      "type": "com.trading.signal.config.TradingProperties$Proxy",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getProxy()"
+    },
+    {
+      "name": "trading.signal",
+      "type": "com.trading.signal.config.TradingProperties$Signal",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getSignal()"
+    },
+    {
+      "name": "trading.trade-api",
+      "type": "com.trading.signal.config.TradingProperties$TradeApi",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "sourceMethod": "getTradeApi()"
+    }
+  ],
+  "properties": [
+    {
+      "name": "trading.backtest.data-dir",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Backtest",
+      "defaultValue": "backtest-data"
+    },
+    {
+      "name": "trading.backtest.initial-capital",
+      "type": "java.lang.Double",
+      "sourceType": "com.trading.signal.config.TradingProperties$Backtest",
+      "defaultValue": 200
+    },
+    {
+      "name": "trading.backtest.leverage",
+      "type": "java.lang.Integer",
+      "sourceType": "com.trading.signal.config.TradingProperties$Backtest",
+      "defaultValue": 20
+    },
+    {
+      "name": "trading.email.app-password",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Email",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.email.cooldown-ms",
+      "type": "java.lang.Long",
+      "sourceType": "com.trading.signal.config.TradingProperties$Email",
+      "defaultValue": 300000
+    },
+    {
+      "name": "trading.email.enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.trading.signal.config.TradingProperties$Email",
+      "defaultValue": false
+    },
+    {
+      "name": "trading.email.receiver-email",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Email",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.email.sender-email",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Email",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.okx.inst-id",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Okx",
+      "defaultValue": "BTC-USDT"
+    },
+    {
+      "name": "trading.okx.limit",
+      "type": "java.lang.Integer",
+      "sourceType": "com.trading.signal.config.TradingProperties$Okx",
+      "defaultValue": 50
+    },
+    {
+      "name": "trading.okx.timeframe",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Okx",
+      "defaultValue": "15m"
+    },
+    {
+      "name": "trading.proxy.enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.trading.signal.config.TradingProperties$Proxy",
+      "defaultValue": false
+    },
+    {
+      "name": "trading.proxy.host",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Proxy",
+      "defaultValue": "127.0.0.1"
+    },
+    {
+      "name": "trading.proxy.port",
+      "type": "java.lang.Integer",
+      "sourceType": "com.trading.signal.config.TradingProperties$Proxy",
+      "defaultValue": 7890
+    },
+    {
+      "name": "trading.signal.output-file",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$Signal",
+      "defaultValue": "signal.json"
+    },
+    {
+      "name": "trading.strategy",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties",
+      "defaultValue": "aggressive"
+    },
+    {
+      "name": "trading.trade-api.api-key",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.trade-api.enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": false
+    },
+    {
+      "name": "trading.trade-api.leverage",
+      "type": "java.lang.Integer",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": 20
+    },
+    {
+      "name": "trading.trade-api.passphrase",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.trade-api.secret-key",
+      "type": "java.lang.String",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": ""
+    },
+    {
+      "name": "trading.trade-api.simulated",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.trading.signal.config.TradingProperties$TradeApi",
+      "defaultValue": true
+    }
+  ],
+  "hints": []
+}
