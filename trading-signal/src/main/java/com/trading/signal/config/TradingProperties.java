@@ -30,6 +30,7 @@ public class TradingProperties {
     private Email email = new Email();
     private Proxy proxy = new Proxy();
     private Backtest backtest = new Backtest();
+    private Agent agent = new Agent();
 
     // ── Getter/Setter ────────────────────────────────────────────────────
 
@@ -53,6 +54,9 @@ public class TradingProperties {
     
     public Backtest getBacktest() { return backtest; }
     public void setBacktest(Backtest backtest) { this.backtest = backtest; }
+
+    public Agent getAgent() { return agent; }
+    public void setAgent(Agent agent) { this.agent = agent; }
 
     // ── OKX 连接配置 ──────────────────────────────────────────────────────
 
@@ -184,5 +188,44 @@ public class TradingProperties {
         
         public String getDataDir() { return dataDir; }
         public void setDataDir(String dataDir) { this.dataDir = dataDir; }
+    }
+
+    // ── AI Agent 配置 ─────────────────────────────────────────────────────
+
+    /**
+     * AI Market Regime Agent 配置
+     * 
+     * 对应 application.yml 中的 trading.agent.*
+     * 
+     * 示例：
+     * trading:
+     *   agent:
+     *     enabled: true
+     *     api-key: "sk-or-xxxxxx"
+     *     model: "anthropic/claude-sonnet-4-5"
+     *     temperature: 0.3
+     *     max-tokens: 512
+     */
+    public static class Agent {
+        private boolean enabled = false;                          // 是否启用
+        private String apiKey = "";                               // OpenRouter API Key
+        private String model = "anthropic/claude-sonnet-4-5";    // 模型名称
+        private double temperature = 0.3;                        // 采样温度（越低越保守）
+        private int maxTokens = 512;                             // 单次最大输出 token 数
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+
+        public String getModel() { return model; }
+        public void setModel(String model) { this.model = model; }
+
+        public double getTemperature() { return temperature; }
+        public void setTemperature(double temperature) { this.temperature = temperature; }
+
+        public int getMaxTokens() { return maxTokens; }
+        public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
     }
 }

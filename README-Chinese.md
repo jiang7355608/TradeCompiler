@@ -1,17 +1,47 @@
 # BTC 交易信号引擎
 
-基于 OKX 15分钟K线的自动交易系统，内置两种策略（突破追踪 + 均值回归），支持自动下单、止盈止损、邮件通知、手机远程控制。
+面向 OKX 15分钟K线的全自动交易系统，包含两种策略（突破追踪与均值回归），支持实盘下单、动态止损、邮件通知与手机远程控制。
 
 ## 核心特性
 
-- ✅ 自动下单：对接 OKX 交易 API，支持模拟盘/实盘
-- ✅ 智能箱体：多次触及法 + 密度聚类，自动识别支撑压力位
-- ✅ 原子止损：下单和止盈止损同一请求，无风险窗口
-- ✅ Trailing Stop：实盘自动跟踪止损，持有趋势获取大额利润
-- ✅ 多重熔断：2连亏1小时冷却，亏损40%永久停止
-- ✅ 邮件通知：开仓/平仓/告警全流程通知
-- ✅ 手机控制：iPhone Shortcuts 一键启停策略
-- ✅ 月度回测：自动回测并发送邮件报告
+- 自动下单：对接 OKX 交易 API，支持模拟盘与实盘
+- 智能箱体：多次触及法与密度聚类结合，自动识别支撑压力位
+- 原子止损：下单与止盈止损同一请求，消除风险窗口
+- 跟踪止损：实盘自动跟踪止损，持有趋势获取大额利润
+- 多重熔断：2连亏1小时冷却，亏损40%永久停止
+- 邮件通知：开仓、平仓、告警全流程通知
+- 手机控制：iPhone Shortcuts 一键启停策略
+- 月度回测：自动回测并发送邮件报告
+- **AI Agent 策略切换** – 基于 LLM 的市场状态感知，自动判断何时在突破策略与均值回归策略之间切换
+
+## AI Agent – 市场状态感知
+
+系统内置一个由大语言模型驱动的决策层，自动检测市场状态变化，决定何时在突破策略与均值回归策略之间切换。
+
+**组件**
+- `MarketRegimeAgent` – 每 8 小时执行一次，拉取 K 线、计算指标、调用 LLM
+- `MarketRegimeAnalyzer` – 技术指标计算器（EMA 斜率、ATR 比率、波动率、突破有效率）
+- `OpenRouterClient` – OpenRouter API 的 HTTP 客户端，支持 OpenAI 兼容的 function calling
+- `ToolDefinitionBuilder` – 将 `switchStrategy` 工具转换为 OpenAI function schema
+- `SwitchStrategyTool` – 验证并执行策略切换，复用与手动交易相同的 5 层风控
+
+**决策流程**
+1. 拉取最近 100 根 K 线（BTC‑USDT，15分钟）
+2. 计算趋势强度、波动率、ATR 扩张比、突破有效率
+3. 将指标整理成 prompt，通过 OpenRouter 发送给 LLM
+4. 若 LLM 认为市场状态已变，会调用 `switchStrategy` 工具
+5. 工具验证持仓、冷却期、账户权益后执行切换
+
+**配置**
+```yaml
+trading:
+  agent:
+    enabled: false
+    api-key: "sk-or-..."
+    model: "anthropic/claude-sonnet-4-5"
+    temperature: 0.3
+    max-tokens: 2048
+```
 
 ## 策略总览
 

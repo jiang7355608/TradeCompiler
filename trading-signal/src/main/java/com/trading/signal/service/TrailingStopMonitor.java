@@ -62,6 +62,18 @@ public class TrailingStopMonitor {
     }
 
     /**
+     * 查询当前是否存在活跃持仓（供 Agent Guardrail 使用）
+     *
+     * 基于内存状态判断（由 TradeExecutor 在开仓/平仓时维护）。
+     * Agent 在切换策略前必须调用此方法，持仓期间不允许切换策略。
+     *
+     * @return true = 有活跃持仓（Trailing Stop 监控中）；false = 无持仓
+     */
+    public boolean hasActivePosition() {
+        return hasPosition;
+    }
+
+    /**
      * 记录开仓信息（由 TradeExecutor 在 BREAKOUT 开仓后调用）
      * 
      * @param direction "long" or "short"

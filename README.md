@@ -1,17 +1,47 @@
 # BTC Trading Signal Engine
 
-Automated trading system for BTC-USDT perpetual futures on OKX. Two strategies (Aggressive + Mean Reversion), live execution, trailing stops, remote control via iPhone.
+Production-grade algorithmic trading system for BTC-USDT perpetual futures. Runs on OKX with two adaptive strategies, live execution, trailing stops, and mobile remote control.
 
-## Features
+## Core Features
 
-- Auto-execution via OKX API (paper/live trading)
-- Dynamic range detection using density clustering + multi-touch validation
-- Atomic stop-loss: order + SL/TP in single request
-- Confidence-based position sizing
-- Trailing stop for trend-following (Aggressive strategy)
-- Multi-layer circuit breakers (2-loss cooldown, 40% drawdown kill switch)
-- Email notifications + remote control via REST API
+- Auto‑execution via OKX API (simulated/live)
+- Dynamic range detection using density clustering with multi‑touch validation
+- Atomic stop‑loss: order and SL/TP in a single request
+- Confidence‑based position sizing
+- Trailing stop for trend‑following (Aggressive strategy only)
+- Multi‑layer circuit breakers (2‑loss cooldown, 40% drawdown kill switch)
+- Email notifications and remote control via REST API
 - Monthly backtesting with automated reports
+- **AI Agent for strategy switching** – LLM‑driven market regime detection that decides when to switch between aggressive and mean‑reversion strategies
+
+## AI Agent – Market Regime Detection
+
+The system includes an LLM‑driven decision layer that automatically detects market regime changes and decides when to switch between aggressive and mean‑reversion strategies.
+
+**Components**
+- `MarketRegimeAgent` – Scheduled every 8 hours, pulls candles, computes indicators, calls LLM
+- `MarketRegimeAnalyzer` – Technical indicator calculator (EMA slope, ATR ratio, volatility, breakout success rate)
+- `OpenRouterClient` – HTTP client for OpenRouter API with OpenAI‑compatible function calling
+- `ToolDefinitionBuilder` – Converts the `switchStrategy` tool into OpenAI function schema
+- `SwitchStrategyTool` – Validates and executes strategy switches with the same 5‑layer guardrails used for manual trading
+
+**Decision Flow**
+1. Fetch last 100 candles (BTC‑USDT, 15m)
+2. Compute trend strength, volatility, ATR expansion ratio, breakout success rate
+3. Format indicators into a prompt and send to LLM via OpenRouter
+4. LLM may call `switchStrategy` tool if it believes market regime has changed
+5. Tool validates position, cooldown, and equity before applying the switch
+
+**Configuration**
+```yaml
+trading:
+  agent:
+    enabled: false
+    api-key: "sk-or-..."
+    model: "anthropic/claude-sonnet-4-5"
+    temperature: 0.3
+    max-tokens: 2048
+```
 
 ## Strategies
 
@@ -267,6 +297,35 @@ trading-signal/
 3. **Position validation** — Query exchange before every order (exchange as single source of truth)
 4. **Equity Kill Switch** — Balance drops to 60% of initial → permanent halt (restart to recover)
 5. **Trailing Stop** — Aggressive strategy only, 1min monitor, moves only in favorable direction
+
+## AI Agent Layer (Market Regime Detection)
+
+An LLM-driven agent that analyzes market data and decides when to switch between Aggressive and Mean Reversion strategies.
+
+**Components**
+- `MarketRegimeAgent` – Scheduled every 8 hours, pulls candles, computes indicators, calls LLM
+- `MarketRegimeAnalyzer` – Technical indicator calculator (EMA slope, ATR ratio, volatility, breakout success rate)
+- `OpenRouterClient` – HTTP client for OpenRouter API with OpenAI‑compatible function calling
+- `ToolDefinitionBuilder` – Converts `switchStrategy` tool into OpenAI function schema
+- `SwitchStrategyTool` – Validates and executes strategy switches with 5‑layer guardrails
+
+**Decision Flow**
+1. Fetch last 100 candles (BTC‑USDT, 15m)
+2. Compute trend strength, volatility, ATR expansion ratio, breakout success rate
+3. Format indicators into a prompt and send to LLM via OpenRouter
+4. LLM may call `switchStrategy` tool if it believes market regime has changed
+5. Tool validates position, cooldown, and equity before applying the switch
+
+**Configuration**
+```yaml
+trading:
+  agent:
+    enabled: false
+    api-key: "sk-or-..."
+    model: "anthropic/claude-sonnet-4-5"
+    temperature: 0.3
+    max-tokens: 2048
+```
 
 ## License
 

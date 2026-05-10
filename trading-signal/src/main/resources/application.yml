@@ -15,26 +15,34 @@ trading:
 
   # ── 代理配置（本地测试时开启）──────────────────────────────────────
   proxy:
-    enabled: false
+    enabled: true
     host: 127.0.0.1
-    port: 7897
+    port: 7890
 
   # ── OKX 交易 API ────────────────────────────────────────────────────
   trade-api:
-    enabled: false          # true=启用自动下单，false=仅发邮件
-    api-key: ""
-    secret-key: ""
-    passphrase: ""
-    simulated: true         # true=模拟盘，false=实盘
-    leverage: 20
+    enabled: true          # true=启用自动下单，false=仅发邮件
+    api-key: ""             # OKX API Key
+    secret-key: ""          # OKX Secret Key
+    passphrase: ""          # OKX Passphrase
+    simulated: true         # true=模拟盘，false=实盘（慎用）
+    leverage: 20            # 杠杆倍数
 
   # ── 邮件通知 ────────────────────────────────────────────────────────
   email:
-    enabled: false
-    sender-email: your-email@gmail.com
-    app-password: ""        # Gmail 应用专用密码
-    receiver-email: your-email@gmail.com
+    enabled: true
+    sender-email: jiangyuxuan7355608@gmail.com    # Gmail 发件地址
+    app-password:       # Gmail 应用专用密码（非登录密码）
+    receiver-email: jiangyuxuan7355608@gmail.com   # 收件地址
     cooldown-ms: 300000     # 邮件冷却时间（5分钟）
+
+  # ── AI Agent 配置 ────────────────────────────────────────────────────
+  agent:
+    enabled: false                            # 是否启用自动策略切换
+    api-key: ""                               # OpenRouter API Key（sk-or-...）
+    model: "anthropic/claude-sonnet-4-5"      # 使用的模型，支持任意 OpenRouter 模型
+    temperature: 0.3                          # 采样温度，越低越保守
+    max-tokens: 2048                          # 单次最大输出 token 数（空间够大，保证 reason 字段完整）
 
   # ── 回测配置 ────────────────────────────────────────────────────────
   backtest:
