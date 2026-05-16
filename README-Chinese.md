@@ -264,6 +264,7 @@ Header：`X-Auth-Token: <your-token>`
 - 定时任务：
   - 主策略分析：每15分钟（对齐K线收盘）
   - Trailing Stop 监控：每1分钟（AggressiveStrategy）
+  - 试探仓止损监控：每1分钟（MeanReversion 试探仓）
   - 箱体识别：每24小时（每天0点，持仓时跳过）
   - 月度回测：每月1号凌晨2点
 

@@ -105,11 +105,12 @@ public class MeanReversionStrategy implements Strategy {
     public void setAccountBalance(double balance) { this.accountBalance = balance; }
     public double getAccountBalance()             { return accountBalance; }
 
-    public synchronized State   getState()       { return state; }
-    public synchronized String  getDirection()   { return direction; }
-    public synchronized double  getStopLoss()    { return state == State.PROBE ? virtualStopLoss : addStopLoss; }
-    public synchronized double  getTakeProfit()  { return addTakeProfit; }
-    public synchronized boolean hasPosition()    { return state != State.IDLE; }
+    public synchronized State   getState()         { return state; }
+    public synchronized String  getDirection()     { return direction; }
+    public synchronized double  getStopLoss()      { return state == State.PROBE ? virtualStopLoss : addStopLoss; }
+    public synchronized double  getTakeProfit()    { return addTakeProfit; }
+    public synchronized long    getProbeEntryTime(){ return probeEntryTime; }
+    public synchronized boolean hasPosition()      { return state != State.IDLE; }
 
     /** TradeExecutor 加仓成功后调用，确认 CONFIRMED 已交付给交易所 */
     public synchronized void confirmHandedOff() {
@@ -262,27 +263,10 @@ public class MeanReversionStrategy implements Strategy {
         double price = data.getCurrentPrice();
         long   now   = data.getLastKline().getTimestamp();
 
-        // 1. 虚拟止损被击穿：reset 到 IDLE（试探仓裸奔在交易所，由 BoxRangeDetector 失效保护 + 永久熔断兜底）
-        boolean stopHit = ("long".equals(direction) && price <= virtualStopLoss)
-                       || ("short".equals(direction) && price >= virtualStopLoss);
-        if (stopHit) {
-            String dir = direction;
-            reset();
-            return noTrade(String.format(
-                    "MR-PROBE %s hit virtual stop %.0f at price %.0f - reset (probe position remains on exchange, manual check)",
-                    dir.toUpperCase(), virtualStopLoss, price));
-        }
+        // 虚拟止损和超时由 ProbeStopMonitor 每1分钟检查并主动平仓
+        // 这里只关注加仓条件评估
 
-        // 2. 试探仓超时：3h 仍未达加仓条件
-        if (now - probeEntryTime > PROBE_TIMEOUT_MS) {
-            String dir = direction;
-            reset();
-            return noTrade(String.format(
-                    "MR-PROBE %s timeout 3h - reset (probe position remains on exchange, manual check)",
-                    dir.toUpperCase()));
-        }
-
-        // 3. 加仓条件评估
+        // 加仓条件评估
         if (!boxRangeDetector.isValid()) {
             return noTrade("Box range invalidated during PROBE, holding");
         }

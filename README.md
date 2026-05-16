@@ -177,6 +177,7 @@ Port: 10086
 - Scheduled tasks:
   - Strategy analysis: Every 15min (aligned to candle close)
   - Trailing stop monitor: Every 1min (Aggressive strategy)
+  - Probe stop monitor: Every 1min (Mean Reversion probe position)
   - Range detection: Daily at 00:00 (skipped if position open)
   - Monthly backtest: 1st of month at 02:00
 
