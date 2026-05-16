@@ -95,34 +95,45 @@ Box range trading: buy low near support, sell high near resistance.
 - Validation: ≥3 touches per boundary, width 1000-12000 USD
 - Update: Daily at 00:00 (skipped if position open)
 
-**Entry Logic**
+**Entry Logic (Two-Stage: Probe → Add)**
+
+**Stage 1: Probe Position (Small Position, No Exchange SL)**
 ```
 Long Entry (near support):
 - Price < rangeLow + 15% of box width
 - Price > rangeLow (not broken)
-→ Enter long, target midline
+- K-line confirmation: bullish candle + close > prev close
+→ Enter probe position: 10% base × 0.60 confidence = 6% actual position
+→ Virtual stop loss: entry - 15% box width (monitored by strategy, not on exchange)
+→ No exchange SL/TP (strategy monitors for 3h timeout or virtual SL hit)
 
 Short Entry (near resistance):
 - Price > rangeHigh - 15% of box width
 - Price < rangeHigh (not broken)
-→ Enter short, target midline
+- K-line confirmation: bearish candle + close < prev close
+→ Enter probe position: 10% base × 0.60 confidence = 6% actual position
+→ Virtual stop loss: entry + 15% box width (monitored by strategy)
+→ No exchange SL/TP
 ```
 
-**Stop Loss & Take Profit**
+**Stage 2: Add Position (Whole-Position SL/TP via attachAlgoOrds)**
 ```
-Long:
-- SL = rangeLow - 1×ATR
-- TP = (rangeHigh + rangeLow) / 2
+Trigger Conditions:
+- Floating profit ≥ 25% of box width
+- Holding time ≥ 45 minutes
 
-Short:
-- SL = rangeHigh + 1×ATR
-- TP = (rangeHigh + rangeLow) / 2
+→ Add position: 30% base × 0.85 confidence = 25.5% actual position
+→ Total position: ~31.5% (probe + add)
+→ Whole-position SL: breakeven level (entry + 5% box width protection)
+→ Whole-position TP: box midline
+→ SL/TP atomically attached to entire position via OKX attachAlgoOrds API
+→ Exchange auto-executes, no further monitoring needed
 ```
 
 **Position Sizing**
-- Risk per trade: 2% of account
-- Max position: 30%
-- Min position: 5% (too small positions are rejected)
+- Probe: 6% actual position (10% base × 0.60 confidence)
+- Add: 25.5% actual position (30% base × 0.85 confidence)
+- Total: ~31.5% max position
 - Cooldown: 15min global, 1hr per direction after 2 consecutive losses
 
 **Backtesting**
